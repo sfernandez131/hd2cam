@@ -1,0 +1,6 @@
+mod/build/
+dist/
+third_party/
+extracted/
+__pycache__/
+*.pyc
