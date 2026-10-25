@@ -10,7 +10,7 @@ if rawget(_G, "HD2CAM") then
 	return
 end
 
-local VERSION = "1.1.0"
+local VERSION = "1.1.1"
 
 local M = {
 	version = VERSION,
@@ -118,6 +118,12 @@ local M = {
 	camera_shake = true,        -- the game's own camera shaker, on explosions and when hit
 	explosion_shake = "grenade", -- CameraShakeSettings presets
 	hit_shake = "pistol",
+	shake_min_gap = 0.25,       -- seconds between mod shakes, so bursts of hits don't stack
+	-- Vehicles (EXOs, bikes, IFVs): the game's own aim and triggers (LT fires
+	-- the EXO's left arm), no mod shakes, and a camera pulled back and up.
+	vehicle_distance_scale = 1.8,
+	vehicle_height_add = 1.2,
+	vehicle_follow_rate = 2.5,  -- how quickly the camera swings behind the vehicle's heading (per second)
 	dynamic_crosshair = true,   -- reticle ticks open with the weapon's spread
 	weapon_panel = true,        -- ammo, magazines and fire mode, bottom right
 	damage_arcs = true,         -- red arc around the reticle toward whatever hit you
@@ -188,6 +194,7 @@ local M = {
 	-- Escort NPCs are killed off after a while out of the camera's view (a
 	-- top-down rule; with a free camera they're out of view constantly).
 	escort_offscreen_safe = true,
+	escort_follow_range = 60,   -- metres: only NPCs this close to you are kept; past the bunker the game culls them as usual
 
 	-- Bend the upper body toward the crosshair while aiming, so the arms and
 	-- gun visibly point up or down. Spread across the spine joints, most at
@@ -361,6 +368,8 @@ local function ease(cur, want, k)
 end
 
 local PAD_RIGHT_STICK = { "right" }
+local EMPTY_TARGETS = {}
+local PROBE_HEIGHTS = { 0.4, 1.2 }
 
 local function flat_right(yaw)
 	return Vector3(math.cos(yaw), math.sin(yaw), 0)
@@ -660,6 +669,18 @@ local function update_view_distance(cm, active)
 		if M.saved_far then
 			Camera.set_far_range(camera, M.saved_far)
 		end
+		if M.camera_disarmed then
+			M.camera_disarmed = false
+			local cam_unit = vp.camera_unit
+			if cam_unit and Unit.alive(cam_unit) then
+				for i = 0, Unit.num_actors(cam_unit) - 1 do
+					local actor = Unit.actor(cam_unit, i)
+					if actor then
+						Actor.set_collision_enabled(actor, true)
+					end
+				end
+			end
+		end
 		M.saved_far, M.fog_base, M.fog_color_base, M.view_frames = nil, nil, nil, 0
 		return
 	end
@@ -686,6 +707,24 @@ local function update_view_distance(cm, active)
 	end
 
 	M.view_frames = (M.view_frames or 0) + 1
+	-- The camera is a unit with a mesh and actors. Top-down it hung far
+	-- overhead; now it sits a few metres behind you at chest height, exactly
+	-- where you walk when backing up while aiming, and the mover stops at
+	-- it. Switch its actors' collision off while the mod's camera is up.
+	if not M.camera_disarmed then
+		local cam_unit = vp.camera_unit
+		if cam_unit and Unit.alive(cam_unit) then
+			M.camera_disarmed = true
+			local n = Unit.num_actors(cam_unit)
+			for i = 0, n - 1 do
+				local actor = Unit.actor(cam_unit, i)
+				if actor then
+					Actor.set_collision_enabled(actor, false)
+				end
+			end
+			log("camera unit: %d actor(s), collision off", n)
+		end
+	end
 	if M.saved_far == nil then
 		local ok, far = pcall(Camera.far_range, camera)
 		M.saved_far = ok and far or false
@@ -933,7 +972,10 @@ local function update_camera(cm, dt)
 
 	local looked_vertically = false
 	M.mouse_axis = M.mouse_axis or Mouse.axis_index("mouse")
-	local delta = Mouse.axis(M.mouse_axis)
+	-- In a vehicle the sticks and the mouse belong to the game (the right
+	-- stick is a tank's right track, the mouse aims the turret); the camera
+	-- follows the vehicle's heading instead, further down.
+	local delta = not M.in_vehicle and Mouse.axis(M.mouse_axis) or nil
 	if delta then
 		local s = math.rad(M.sensitivity) * (M.aiming_now and M.aim_sensitivity or 1)
 		local dy = M.invert_y and -delta.y or delta.y
@@ -947,7 +989,7 @@ local function update_camera(cm, dt)
 
 	-- Right stick of the pad the player is using (set by the input hook).
 	local pad = M.player_pad
-	if pad and dt then
+	if pad and dt and not M.in_vehicle then
 		local stick = pad_value(pad, "axis", PAD_RIGHT_STICK)
 		if stick then
 			local mult = pad_aiming(pad) and M.pad_aim_slowdown or 1
@@ -980,6 +1022,17 @@ local function update_camera(cm, dt)
 	if M.spectate_orbit and dt then
 		M.yaw = M.yaw + 0.35 * dt
 	end
+	-- In a vehicle: ease the view round behind whatever the camera follows
+	-- (the vehicle), since the sticks are the game's there.
+	if M.in_vehicle and dt then
+		local vehicle = next(cm.targets or EMPTY_TARGETS)
+		if vehicle and Unit.alive(vehicle) then
+			local f = Quaternion.forward(Unit.local_rotation(vehicle, 0))
+			local d = math.atan2(-f.x, f.y) - M.yaw
+			d = math.atan2(math.sin(d), math.cos(d))
+			M.yaw = M.yaw + d * math.min(1, dt * (M.vehicle_follow_rate or 2.5))
+		end
+	end
 
 	-- Letting go of aim eases the view back to level (the default tilt),
 	-- unless you're actively looking up or down.
@@ -1011,14 +1064,33 @@ local function update_camera(cm, dt)
 	-- Recoil kick: an upward offset that settles back.
 	M.recoil = (M.recoil or 0) * math.exp(-(dt or 0) * M.recoil_recover)
 
+	-- In a vehicle? The character's state machine says (the turn hook keeps
+	-- its context). Seated: the game keeps its own aim and triggers, no mod
+	-- shakes, and the camera sits further back and higher.
+	local ctx = M.local_context
+	local cst = type(ctx) == "table" and type(ctx.state) == "table" and ctx.state or nil
+	local seated = cst ~= nil and M.state_name_of ~= nil and M.state_name_of(cst.current_state) == "CharacterStateSeated"
+	if seated ~= M.in_vehicle then
+		M.in_vehicle = seated
+		M.shot_screen = nil
+		log("vehicle: %s", seated and "seated (stock aim and triggers, camera back)" or "on foot")
+		-- Vanilla pad layout while seated: a mech's left arm fires on the
+		-- "throw" input, which the HD2 layout moves off the left trigger.
+		if M.set_pad_remap then
+			M.set_pad_remap(M.pad_remap and not seated and not M.coop_blocked)
+		end
+	end
+
 	-- HD2 feel, eased: closer and further over the shoulder while aiming, a
 	-- little further back and wider while sprinting, lower while prone.
 	local k = math.min(1, (dt or 0) * 8)
 	M.aim_blend = ease(M.aim_blend, M.aiming_now and 1 or 0, k)
 	M.sprint_blend = ease(M.sprint_blend, (M.sprinting and not M.aiming_now) and 1 or 0, k)
-	M.cur_height = ease(M.cur_height, M.downed and M.prone_height or M.height, k)
+	M.vehicle_blend = ease(M.vehicle_blend, seated and 1 or 0, k)
+	M.cur_height = ease(M.cur_height, (M.downed and M.prone_height or M.height) + M.vehicle_height_add * M.vehicle_blend, k)
 	local dist_scale = (1 + (M.aim_distance_scale - 1) * M.aim_blend)
 		* (1 + (M.sprint_distance_scale - 1) * M.sprint_blend)
+		* (1 + (M.vehicle_distance_scale - 1) * M.vehicle_blend)
 	local shoulder_scale = 1 + (M.aim_shoulder_scale - 1) * M.aim_blend
 
 	-- Zoom while aiming.
@@ -1063,7 +1135,7 @@ local function update_camera(cm, dt)
 		props.look_ahead = 0
 	end
 
-	if M.pin_cursor then
+	if M.pin_cursor and not M.in_vehicle then
 		if M.shot_screen and not M.on_bridge then
 			-- Same coordinates the game itself passes here (world_to_screen).
 			CursorManager:set_cursor_position(Vector3(math.floor(M.shot_screen[1]), math.floor(M.shot_screen[2]), 0))
@@ -1273,6 +1345,7 @@ on_require("lua/managers/camera_manager", function()
 		M.patrols, M.patrols_at, M.objectives, M.objectives_at = nil, nil, nil, nil
 		M.hit_seen, M.ping_request, M.throwing, M.crawl_firing = nil, false, false, false
 		M.input_fields_logged, M.back_logged_at = false, nil
+		M.local_context, M.in_vehicle, M.vehicle_blend, M.shake_at = nil, false, nil, nil
 		M.dressed = false
 		for j = #M.props, 1, -1 do
 			M.props[j] = nil
@@ -1291,6 +1364,7 @@ on_require("lua/managers/camera_manager", function()
 		M.saved, M.yaw, M.cur_distance, M.cur_fov, M.recoil = nil, nil, nil, nil, 0
 		M.fog_applied, M.fog_base, M.saved_far, M.view_frames = false, nil, nil, 0
 		M.fog_graded, M.fog_color_base, M.dof_vars_set, M.dof_amount_set = false, nil, false, nil
+		M.camera_disarmed = false
 		-- The sky GUI belonged to the old world, which destroyed it.
 		M.sky_gui, M.sky_color, M.engine_sky = nil, nil, nil
 		M.environment, M.own_mark, M.own_mark_armed = nil, nil, false
@@ -1551,6 +1625,29 @@ local function log_backward_move(unit, data, mv)
 		tostring(ms.acceleration), tostring(ms.deceleration), tostring(ms.lock_direction),
 		tostring(ms.lock_direction_backwards), held and string.format("%.2f,%.2f", held.x, held.y) or type(ms.movement),
 		tostring(ms.constant_movement))
+	-- The mover's velocity is measured from the position physics actually
+	-- allowed, so a shortfall is a collision. Look along the move direction
+	-- at knee and chest height for whatever is in the way, and say whether
+	-- it is one of the character's own attached units.
+	local dir = Vector3.normalize(flat(mv))
+	local here = Unit.world_position(unit, 0)
+	local physics = World.physics_world(camera_world(CameraManager))
+	local attached = M.linked_units and M.linked_units(unit) or EMPTY_STATE
+	for _, height in ipairs(PROBE_HEIGHTS) do
+		local hit, pos, dist, _, actor = PhysicsWorld.immediate_raycast(physics, here + Vector3(0, 0, height), dir, 2.5,
+			"closest", "types", "both", "collision_filter", "default")
+		if hit then
+			local ok, hit_unit = pcall(Actor.unit, actor)
+			local own = false
+			for _, u in ipairs(attached) do
+				if u == hit_unit then
+					own = true
+				end
+			end
+			log("  blocker at %.1f m height: %s %.2f m away%s%s", height, tostring(ok and hit_unit or actor), dist or -1,
+				hit_unit == unit and " (the character itself)" or "", own and " (attached to the character)" or "")
+		end
+	end
 	local state = M.state_name_of and M.state_name_of(cs.current_state) or tostring(cs.current_state)
 	log("backward while aiming: move %.2f,%.2f (rel %.2f), velocity %.2f, wanted speed %s, state %s, forced rot %s, aim %s",
 		mv.x, mv.y, rel, speed, tostring(cs.wanted_move_speed), state, tostring(cs.forced_rotation_speed),
@@ -2108,6 +2205,7 @@ on_require("lua/components/input_component", function()
 	end
 
 	local R3, LB, D_UP, D_DOWN = { "right_thumb", "r3" }, { "left_shoulder", "l1" }, { "d_up" }, { "d_down" }
+	local LT_NAMES = { "left_trigger", "l2", "l2_trigger" }
 	local function pad_extras(data)
 		local pad = M.player_pad
 		if not pad then
@@ -2210,6 +2308,27 @@ on_require("lua/components/input_component", function()
 			data.dodge = false
 			pcall(EntityAux.queue_command_master, unit, "input", "reset_filter", "dodge_pressed")
 		end
+		-- Seated in a vehicle: the game keeps its triggers (the EXO's left
+		-- arm is on LT), its aim and its dive button; the mod only looks.
+		if M.in_vehicle and component == "character" and command == "input" and unit == M.local_unit then
+			M.combat_now, M.aiming_now, M.throwing = false, false, false
+			-- The vehicles read "throw" (a bike's brake, an exosuit's left arm),
+			-- which is the vanilla left trigger. Feed the raw trigger in
+			-- directly rather than trust a rebind on an already-set-up pad.
+			local pad = M.player_pad
+			if pad and type(data) == "table" then
+				local lt = pad_value(pad, "button", LT_NAMES)
+				if lt and lt > 0.3 then
+					data.throw, data.throw_amount = true, lt
+				end
+				if lt and lt > 0.3 and M.clock - (M.vehicle_lt_logged_at or -10) > 1 then
+					M.vehicle_lt_logged_at = M.clock
+					log("vehicle input: LT %.2f -> throw %s, throw_amount %s, fire %s", lt,
+						tostring(data.throw), tostring(data.throw_amount), tostring(data.fire))
+				end
+			end
+			return original(self, unit, component, command, data, ...)
+		end
 		if component == "character" and command == "input" and type(data) == "table"
 			and unit == M.local_unit and camera_active() and not M.on_bridge then
 			try("pad extras", pad_extras, data)
@@ -2263,8 +2382,11 @@ on_require("lua/character_states/character_state_machine", function()
 	-- own update needs the protected call. The prone key acts here, before
 	-- the state machine runs, so a state change set now is applied this frame.
 	sm.update = function(unit, context, ...)
-		if unit == M.local_unit and M.prone_request and M.prone_toggle then
-			try("prone toggle", M.prone_toggle, unit, context)
+		if unit == M.local_unit then
+			M.local_context = context
+			if M.prone_request and M.prone_toggle then
+				try("prone toggle", M.prone_toggle, unit, context)
+			end
 		end
 		if unit ~= M.player_unit then
 			return original(unit, context, ...)
@@ -2544,14 +2666,29 @@ on_require("lua/components/npc_escort_component", function()
 	end
 	local original = ec.update_derived_master
 	mark_patched(ec, "offscreen")
-	local function keep_alive(context)
+	-- Only NPCs still with you: within escort_follow_range of your character
+	-- and not finished. Past the bunker they walk off the map, and the game's
+	-- own off-screen cull is what removes them; keeping those alive soft-locks
+	-- the mission.
+	local function keep_alive(unit, context)
 		local st = type(context) == "table" and context.state
-		if st and type(st.outside_screen_timer) == "number" and M.escort_offscreen_safe and M.on() then
+		if not (st and type(st.outside_screen_timer) == "number" and M.escort_offscreen_safe and M.on()) then
+			return
+		end
+		if st.finished or not (M.local_unit and Unit.alive(M.local_unit) and Unit.alive(unit)) then
+			return
+		end
+		local range = M.escort_follow_range or 60
+		if Vector3.distance_squared(Unit.world_position(unit, 0), Unit.world_position(M.local_unit, 0)) <= range * range then
 			st.outside_screen_timer = 1000000
+		elseif st.outside_screen_timer > 100 then
+			-- Out of range after being protected: hand the game's own timer back.
+			local info = type(context.settings) == "table" and context.settings.npc_escort_info
+			st.outside_screen_timer = type(info) == "table" and tonumber(info.outside_screen_kill_time) or 10
 		end
 	end
 	ec.update_derived_master = function(self, unit, context, ...)
-		try("escort", keep_alive, context)
+		try("escort", keep_alive, unit, context)
 		return original(self, unit, context, ...)
 	end
 	log("escort hook installed")
@@ -2565,9 +2702,15 @@ end)
 ---------------------------------------------------------------------------
 
 local function add_shake(preset_name, pos)
+	-- Not in a vehicle (it takes hits constantly and has its own feel), and
+	-- never more often than shake_min_gap.
+	if M.in_vehicle or M.clock - (M.shake_at or -10) < (M.shake_min_gap or 0) then
+		return
+	end
 	local presets = rawget(_G, "CameraShakeSettings")
 	local preset = presets and presets[preset_name]
 	if preset and CameraManager and CameraManager.add_shake then
+		M.shake_at = M.clock
 		CameraManager:add_shake(preset, Vector3Aux.box({}, pos))
 	end
 end
@@ -3477,8 +3620,9 @@ local function coop_update(players)
 		end
 	else
 		M.coop_blocked_since = nil
+		-- The HD2 layout, unless switched off in the menu or seated in a vehicle.
 		if M.set_pad_remap then
-			M.set_pad_remap(true)
+			M.set_pad_remap(M.pad_remap and not M.in_vehicle)
 		end
 	end
 end
@@ -4007,7 +4151,8 @@ end
 
 -- Asked every frame on a pad; the physics answers on the next step.
 local function update_aim_assist()
-	if not (M.pad_aim_assist and M.player_pad and camera_active() and not M.on_bridge and M.local_unit) then
+	if not (M.pad_aim_assist and M.player_pad and camera_active() and not M.on_bridge and M.local_unit)
+		or M.in_vehicle then
 		return
 	end
 	local target = crosshair_point()
@@ -4165,6 +4310,7 @@ local SETTINGS = {
 	{ "Auto-centre only when sprinting", "auto_center_sprint_only" },
 	{ "Auto-centre strength", "auto_center_rate", 0.2, 3, 0.2 },
 	{ "Camera shake", "camera_shake" },
+	{ "Vehicle camera distance x", "vehicle_distance_scale", 1, 3, 0.1 },
 	{ "GAMEPLAY" },
 	{ "Aim walk speed", "aim_walk_speed", 1, 3, 0.25 },
 	{ "Hold dive to go prone (s, 0 off)", "prone_hold", 0, 0.6, 0.05 },
