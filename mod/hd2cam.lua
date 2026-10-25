@@ -10,7 +10,7 @@ if rawget(_G, "HD2CAM") then
 	return
 end
 
-local VERSION = "1.0.0"
+local VERSION = "1.1.0"
 
 local M = {
 	version = VERSION,
@@ -43,6 +43,10 @@ local M = {
 
 	camera_collision = true, -- pull the camera in rather than clip into rocks
 	camera_min_distance = 1.2,
+	-- How quickly the camera closes on its goal, per second. The body moves
+	-- in physics and network steps; a camera glued to it (0 = snap, the old
+	-- behaviour) shows every step as judder. Higher follows more tightly.
+	camera_smoothing = 30,
 
 	-- Controller: right stick turns the camera, left trigger aims.
 	pad_remap = true,          -- HD2-style button layout (see remap_pad_bindings)
@@ -64,8 +68,10 @@ local M = {
 	fog_scale_by_environment = { city = 3, lava = 3 },
 	sky = true,           -- draw a sky dome (F9 toggles in a mission)
 	sky_distance = 850,   -- metres; between the fog end and the far clip plane
-	sky_day_luminance = 0.8, -- fog this bright or more keeps the engine dome at full brightness
-	sky_min_brightness = 0.15, -- darkest the engine dome gets (night)
+	sky_day_luminance = 3.0, -- fog this bright or more keeps the engine dome at full brightness (fog is HDR)
+	sky_min_brightness = 0.08, -- darkest the engine dome gets
+	-- Dome brightness by the level's time of day, on top of the fog luminance.
+	sky_time_brightness = { dawn = 0.55, day = 1, dusk = 0.45, night = 0.12 },
 	far_range = 600,
 	-- Depth of field blurs everything past the top-down focus distance, and
 	-- smears it into the empty sky when the camera turns. Off in missions;
@@ -93,6 +99,95 @@ local M = {
 	compass_enemies = true, -- radar-detected enemy patrols on the compass
 	aim_spread_scale = 0.35, -- weapon spread multiplier while aiming
 	hip_spread_scale = 0.75, -- and when firing from the hip
+
+	-- HD2 feel. Each of these is its own switch.
+	aim_distance_scale = 0.7,   -- camera distance while aiming, as a share of `distance`
+	aim_shoulder_scale = 1.3,   -- shoulder offset while aiming
+	aim_sensitivity = 0.6,      -- mouse sensitivity multiplier while aiming (pads: pad_aim_slowdown)
+	-- HD1 creeps while aiming (base aim speed x the weapon's own factor, a
+	-- crawl with heavy weapons); HD2 walks. Multiplier on the speed the
+	-- character hands the mover while in the aim and fire states.
+	aim_walk_speed = 2.0,
+	sprint_distance_scale = 1.15, -- the camera pulls back a little while sprinting
+	sprint_fov = 1.06,          -- and the view widens
+	prone_height = 0.9,         -- camera height while downed (prone)
+	auto_center = true,         -- running with the look input idle eases the view behind you
+	auto_center_sprint_only = true, -- HD2 leaves the camera alone; only while sprinting, and gently
+	auto_center_delay = 2.0,    -- seconds without look input first
+	auto_center_rate = 0.8,     -- how quickly it swings behind (share of the gap per second)
+	camera_shake = true,        -- the game's own camera shaker, on explosions and when hit
+	explosion_shake = "grenade", -- CameraShakeSettings presets
+	hit_shake = "pistol",
+	dynamic_crosshair = true,   -- reticle ticks open with the weapon's spread
+	weapon_panel = true,        -- ammo, magazines and fire mode, bottom right
+	damage_arcs = true,         -- red arc around the reticle toward whatever hit you
+	throw_arc = true,           -- grenade / stratagem arc to the crosshair while holding a throw
+	throw_to_crosshair = true,  -- mouse throws land on the crosshair point (the game aims them at the cursor)
+	stratagem_panel = false,    -- HD2-style stratagem list with arrow codes, replacing the game's (off: the game's own list)
+	death_cam = true,           -- dead: follow a living teammate, else orbit your body
+	pad_aim_assist = true,      -- controller: the camera slows while the reticle is on an enemy
+	aim_assist_radius = 1.6,    -- metres around the crosshair point
+	aim_assist_slowdown = 0.45,
+	ping_callout = true,        -- pinging also sends the "move" voice callout
+
+	-- Graphics. Renderer settings the options menu never shows, applied for
+	-- the session only (your saved settings are untouched) and put back when
+	-- the mod is off; each one is logged. Shadow map size isn't here: the
+	-- engine reads it at startup from the graphics menu's own option.
+	renderer_settings = {
+		ssao_enabled = true, particles_cast_shadows = true,
+		-- Batch two, each logged as accepted or refused. Tessellation detail
+		-- and triangle size (the saved values are 1 and 8), the scatter and
+		-- decoration density and object LOD multiplier the executable names,
+		-- and reflection cubemaps.
+		g_tessellation_detail = 2, g_tessellation_tri_size = 4,
+		lod_scatter_density = 2, lod_decoration_density = 2, lod_object_multiplier = 2,
+		generate_cubemap = true,
+		-- Global illumination (voxel cone tracing): very heavy if it still
+		-- works at all; flip to true to find out.
+		voxel_cone_tracing = false,
+	},
+	aim_dof = true,             -- depth of field focused on the crosshair while aiming (overrides disable_dof)
+	aim_dof_amount = 0.7,       -- 0..1
+	-- Fog colour multipliers per planet type (the level's own fog, tinted).
+	fog_grading = {
+		desert = { 1.08, 0.98, 0.85 }, snow = { 0.9, 0.98, 1.12 }, forest = { 0.95, 1.05, 0.9 },
+		city = { 0.95, 0.95, 1.05 }, lava = { 1.15, 0.9, 0.8 },
+	},
+	fog_grading_strength = 1,   -- 0 = off, 1 = as listed, more = stronger
+	hit_vignette = true,        -- red edges when you take damage
+	compass_enemy_range = 45,   -- metres: enemies this close and in view show on the compass
+	compass_enemy_los = true,   -- only enemies with a clear line from you (HD2 shows spotted ones)
+	-- Weather on any planet: "auto" picks by planet type from weather_effects,
+	-- "off" none, or a planet type / effect path to force one.
+	weather = "auto",
+	weather_effects = {
+		desert = "effects/generated/camera_desert_wind",
+		forest = "effects/generated/camera_forest_light_rain",
+		snow = "effects/generated/camera_snow_light_snow",
+		city = "effects/generated/camera_city_embers",
+		lava = "effects/generated/camera_city_embers",
+	},
+	-- Ambient dressing around objectives: burning debris, from the one
+	-- looping effect every mission has loaded. Particles carry no logic, so
+	-- this cannot crash. Gear units (crates, wire, barricades, the crashed
+	-- shuttle) run their own flow scripts when spawned and the engine died a
+	-- few seconds after a batch of them; a unit goes in prop_units only once
+	-- it has been spawned on its own and survived a mission (each spawn is
+	-- logged by name so a crash can be pinned).
+	ambient_props = true,
+	prop_effects = { "effects/generated/status_fire" },
+	props_per_objective = 3,
+	prop_units = {},
+	prop_wreck = nil,
+	-- In-game settings menu (saved to hd2cam.cfg next to the log).
+	menu_key = "insert",        -- opens / closes it (controller: L3 + R3 together)
+	prone_fire = true,          -- firing while prone (crawl) or downed shoots
+	prone_key = "z",            -- keyboard: go prone / stand up without diving (controller: hold dive)
+	prone_hold = 0.35,          -- seconds: hold the dive button this long to go prone instead (HD2); a tap dives
+	-- Escort NPCs are killed off after a while out of the camera's view (a
+	-- top-down rule; with a free camera they're out of view constantly).
+	escort_offscreen_safe = true,
 
 	-- Bend the upper body toward the crosshair while aiming, so the arms and
 	-- gun visibly point up or down. Spread across the spine joints, most at
@@ -139,6 +234,7 @@ local perf = {
 	depth = 0, mod = 0, sections = {}, update = 0, render = 0,
 	win_t = 0, win_frames = 0, win_hitches = 0, win_mod = 0, win_mod_max = 0,
 	win_alloc = 0, win_worst = 0, win_ms = 0,
+	win_slow = 0, win_over16 = 0, win_sec_max = {},
 }
 
 local function try(where, f, ...)
@@ -209,8 +305,16 @@ end
 -- Helpers
 ---------------------------------------------------------------------------
 
+-- Key indices never change; look each name up once (several keys are
+-- polled every frame).
+local key_index = {}
+
 local function key_pressed(name)
-	local idx = Keyboard.button_index(name)
+	local idx = key_index[name]
+	if idx == nil then
+		idx = Keyboard.button_index(name) or false
+		key_index[name] = idx
+	end
 	return idx and Keyboard.pressed(idx)
 end
 
@@ -250,6 +354,14 @@ local function flat_forward(yaw)
 	return Vector3(-math.sin(yaw), math.cos(yaw), 0)
 end
 
+-- One eased step from cur toward want (k = share of the gap per frame).
+local function ease(cur, want, k)
+	cur = cur or want
+	return cur + (want - cur) * k
+end
+
+local PAD_RIGHT_STICK = { "right" }
+
 local function flat_right(yaw)
 	return Vector3(math.cos(yaw), math.sin(yaw), 0)
 end
@@ -266,9 +378,12 @@ end
 
 -- Pads name their buttons differently (xbox, ps4, ...); use the first name
 -- this device knows.
+local PAD_INDEX_OF = { button = "button_index", axis = "axis_index" }
+
 local function pad_value(pad, kind, names)
+	local index_of = pad[PAD_INDEX_OF[kind]]
 	for _, name in ipairs(names) do
-		local ok, idx = pcall(pad[kind .. "_index"], name)
+		local ok, idx = pcall(index_of, name)
 		if ok and idx then
 			return pad[kind](idx)
 		end
@@ -401,7 +516,7 @@ local function save_camera(cm)
 	if M.saved then
 		return
 	end
-	local o = cm.follow_offset or { x = 0, y = 0, z = 0 }
+	local o = cm.follow_offset
 	M.saved = {
 		follow_spin = cm.follow_spin,
 		follow_angle = cm.follow_angle,
@@ -411,7 +526,10 @@ local function save_camera(cm)
 		fov = cm.fov,
 		follow_position_interp = cm.follow_position_interp,
 		ignore_level_bounds = cm.ignore_level_bounds,
-		offset = { x = o.x, y = o.y, z = o.z },
+		-- nil when the game had no offset table: the camera update makes
+		-- one, and restoring must take it away again (the game adds
+		-- (x - 1, y - 1) from any table it finds).
+		offset = o and { x = o.x, y = o.y, z = o.z } or nil,
 		look_ahead = {},
 	}
 end
@@ -431,7 +549,9 @@ local function restore_camera(cm)
 		cm.fov = s.fov
 	end
 	cm.ignore_level_bounds = s.ignore_level_bounds
-	if cm.follow_offset then
+	if not s.offset then
+		cm.follow_offset = nil
+	elseif cm.follow_offset then
 		cm.follow_offset.x, cm.follow_offset.y, cm.follow_offset.z = s.offset.x, s.offset.y, s.offset.z
 	end
 	for _, props in pairs(cm.targets or {}) do
@@ -450,15 +570,14 @@ end
 
 -- Distance from the shoulder pivot to the camera, shortened when level
 -- geometry is in the way. Pulls in instantly, eases back out.
-local function camera_distance(cm, side, dt)
-	local wanted = M.distance
+local function camera_distance(cm, side, dt, wanted, height)
 	local unit = next(cm.targets or {})
 	if M.camera_collision and unit and Unit.alive(unit) then
-		local pivot = Unit.world_position(unit, 0) + side + Vector3(0, 0, M.height)
+		local pivot = Unit.world_position(unit, 0) + side + Vector3(0, 0, height)
 		local rot = Quaternion.multiply(Quaternion(Vector3.up(), M.yaw), Quaternion(Vector3(-1, 0, 0), M.pitch_rad))
 		local back = Quaternion.rotate(rot, Vector3(0, -1, 0))
 		local hit, _, dist = PhysicsWorld.immediate_raycast(World.physics_world(camera_world(cm)), pivot, back,
-			M.distance + 0.3, "closest", "types", "statics", "collision_filter", "default")
+			wanted + 0.3, "closest", "types", "statics", "collision_filter", "default")
 		if hit and dist then
 			wanted = math.max(M.camera_min_distance, dist - 0.3)
 		end
@@ -473,6 +592,36 @@ local function camera_distance(cm, side, dt)
 	return cur
 end
 
+-- Renderer settings for the session: the mod's own (DOF off unless the aim
+-- DOF drives it, plus the hidden ones in `renderer_settings`) while active,
+-- the player's saved values when not. Values go in as strings, as the
+-- options menu sends them.
+local function apply_renderer_settings(on)
+	local dof_wanted
+	if M.aim_dof then
+		dof_wanted = true
+	elseif M.disable_dof then
+		dof_wanted = false
+	end
+	if dof_wanted ~= nil then
+		local value = dof_wanted
+		if not on then
+			value = Application.user_setting("render_settings", "dof_enabled") ~= false
+		end
+		Application.set_renderer_setting("dof_enabled", tostring(value))
+	end
+	for name, wanted in pairs(M.renderer_settings or {}) do
+		local user = Application.user_setting("render_settings", name)
+		local value = on and wanted or user
+		if value == nil then
+			value = wanted
+		end
+		local ok, err = pcall(Application.set_renderer_setting, name, tostring(value))
+		log("renderer: %s = %s (saved setting %s)%s", name, tostring(value), tostring(user),
+			ok and "" or (" failed: " .. tostring(err)))
+	end
+end
+
 -- Push fog and the far clip plane out while the mod's camera is active, and
 -- put both back otherwise. The level's fog is read a few frames into the
 -- mission (before we override it) and scaled, so each planet keeps its look.
@@ -485,15 +634,12 @@ local function update_view_distance(cm, active)
 
 	-- Renderer settings are global; set_renderer_setting changes them for this
 	-- session only, without touching the saved user settings.
-	if M.disable_dof then
-		if active and not M.dof_off then
-			Application.set_renderer_setting("dof_enabled", "false")
-			M.dof_off = true
-		elseif not active and M.dof_off then
-			local user = Application.user_setting("render_settings", "dof_enabled")
-			Application.set_renderer_setting("dof_enabled", tostring(user ~= false))
-			M.dof_off = false
-		end
+	if active and not M.render_applied then
+		M.render_applied = true
+		try("renderer settings", apply_renderer_settings, true)
+	elseif not active and M.render_applied then
+		M.render_applied = false
+		try("renderer settings", apply_renderer_settings, false)
 	end
 
 	if not active then
@@ -501,11 +647,42 @@ local function update_view_distance(cm, active)
 			vp:remove_shading_environment_variable("fog_depth_range")
 			M.fog_applied = false
 		end
+		if M.fog_graded then
+			vp:remove_shading_environment_variable("fog_color")
+			M.fog_graded = false
+		end
+		if M.dof_vars_set then
+			vp:remove_shading_environment_variable("dof_amount")
+			vp:remove_shading_environment_variable("dof_near_setting")
+			vp:remove_shading_environment_variable("dof_far_setting")
+			M.dof_vars_set, M.dof_amount_set = false, nil
+		end
 		if M.saved_far then
 			Camera.set_far_range(camera, M.saved_far)
 		end
-		M.saved_far, M.fog_base, M.view_frames = nil, nil, 0
+		M.saved_far, M.fog_base, M.fog_color_base, M.view_frames = nil, nil, nil, 0
 		return
+	end
+
+	-- Aim depth of field: focus at the crosshair's distance while aiming,
+	-- none otherwise (the game's top-down focus distance blurs everything).
+	if M.aim_dof then
+		local want = M.aiming_now and M.aim_dof_amount or 0
+		if want > 0 or want ~= M.dof_amount_set then
+			local d = 20
+			if M.aim_point then
+				d = Vector3.distance(cm:get_position(), Vector3Aux.unbox(M.aim_point))
+			end
+			d = math.max(3, d)
+			local near, far = M.dof_near_buf or {}, M.dof_far_buf or {}
+			near[1], near[2] = 0, math.max(0.5, d * 0.5)
+			far[1], far[2] = d * 1.6, d * 5
+			M.dof_near_buf, M.dof_far_buf = near, far
+			vp:set_shading_environment_variable("dof_near_setting", "vector2", near)
+			vp:set_shading_environment_variable("dof_far_setting", "vector2", far)
+			vp:set_shading_environment_variable("dof_amount", "scalar", want)
+			M.dof_vars_set, M.dof_amount_set = true, want
+		end
 	end
 
 	M.view_frames = (M.view_frames or 0) + 1
@@ -530,6 +707,25 @@ local function update_view_distance(cm, active)
 		vp:set_shading_environment_variable("fog_depth_range", "vector2",
 			{ M.fog_base[1] * M.fog_scale, M.fog_base[2] * M.fog_scale })
 		M.fog_applied = true
+	end
+
+	-- Fog grading: tint the level's own fog colour per planet type, once the
+	-- HUD has told us which planet this is.
+	if M.fog_color_base == nil and M.view_frames >= 5 then
+		local ok, c = pcall(ShadingEnvironment.vector3, vp:get_shading_environment(), "fog_color")
+		M.fog_color_base = ok and c and { c.x, c.y, c.z } or false
+	end
+	if M.fog_color_base and not M.fog_graded and M.environment and (M.fog_grading_strength or 0) > 0 then
+		local g = M.fog_grading and M.fog_grading[M.environment]
+		if g then
+			local s, b = M.fog_grading_strength, M.fog_color_base
+			local graded = { b[1] * (1 + (g[1] - 1) * s), b[2] * (1 + (g[2] - 1) * s), b[3] * (1 + (g[3] - 1) * s) }
+			vp:set_shading_environment_variable("fog_color", "vector3", graded)
+			M.sky_color = graded -- the sky takes the graded fog colour too
+			M.engine_sky_tinted = false
+			log("fog grading %s: x%.2f %.2f %.2f", tostring(M.environment), g[1], g[2], g[3])
+		end
+		M.fog_graded = true
 	end
 end
 
@@ -659,9 +855,10 @@ local function update_engine_sky(cm, want)
 		M.engine_sky_tinted = true
 		local c = M.sky_color
 		local lum = 0.2126 * c[1] + 0.7152 * c[2] + 0.0722 * c[3]
-		local factor = math.max(M.sky_min_brightness, math.min(1, lum / M.sky_day_luminance))
+		local by_time = M.sky_time_brightness and M.time_of_day and M.sky_time_brightness[M.time_of_day] or 1
+		local factor = math.max(M.sky_min_brightness, math.min(1, lum / M.sky_day_luminance) * by_time)
 		set_dome_intensity(M.engine_sky, SKYDOME_INTENSITY * factor)
-		log("sky: fog luminance %.2f -> dome brightness x%.2f", lum, factor)
+		log("sky: fog luminance %.2f, time of day %s -> dome brightness x%.2f", lum, tostring(M.time_of_day), factor)
 	end
 	if M.engine_sky and M.engine_sky_visible ~= want then
 		M.engine_sky_visible = want
@@ -695,6 +892,34 @@ local function update_sky(cm, active)
 	end
 end
 
+-- Weather: one of the game's camera-attached effects (wind, rain, snow,
+-- embers; all in the package every mission loads) started on any planet.
+-- The key is unique per scene, since the camera manager remembers keys and
+-- the old world's particles die with it.
+local function update_weather(cm, active)
+	local want = active and M.weather and M.weather ~= "off" and M.environment
+	if want and M.weather_key == nil and cm.add_camera_particle then
+		local effect
+		if M.weather == "auto" then
+			effect = M.weather_effects and M.weather_effects[M.environment]
+		elseif M.weather_effects and M.weather_effects[M.weather] then
+			effect = M.weather_effects[M.weather]
+		elseif string.find(M.weather, "/") then
+			effect = M.weather
+		end
+		if effect then
+			M.weather_key = "hd2cam_weather_" .. (M.scene_serial or 0)
+			cm:add_camera_particle(M.weather_key, effect, rawget(_G, "IS_PC") ~= false)
+			log("weather: %s", effect)
+		else
+			M.weather_key = false -- nothing for this planet; don't ask again
+		end
+	elseif not active and M.weather_key and cm.remove_camera_particle then
+		cm:remove_camera_particle(M.weather_key)
+		M.weather_key = nil
+	end
+end
+
 local function update_camera(cm, dt)
 	if not camera_active() then
 		return
@@ -707,26 +932,53 @@ local function update_camera(cm, dt)
 	end
 
 	local looked_vertically = false
-	local delta = Mouse.axis(Mouse.axis_index("mouse"))
+	M.mouse_axis = M.mouse_axis or Mouse.axis_index("mouse")
+	local delta = Mouse.axis(M.mouse_axis)
 	if delta then
-		local s = math.rad(M.sensitivity)
+		local s = math.rad(M.sensitivity) * (M.aiming_now and M.aim_sensitivity or 1)
 		local dy = M.invert_y and -delta.y or delta.y
 		M.yaw = M.yaw - delta.x * s
 		M.pitch_rad = M.pitch_rad + dy * s
 		looked_vertically = math.abs(delta.y) > 0.5
+		if delta.x ~= 0 or delta.y ~= 0 then
+			M.look_at = M.clock
+		end
 	end
 
 	-- Right stick of the pad the player is using (set by the input hook).
 	local pad = M.player_pad
 	if pad and dt then
-		local stick = pad_value(pad, "axis", { "right" })
+		local stick = pad_value(pad, "axis", PAD_RIGHT_STICK)
 		if stick then
 			local mult = pad_aiming(pad) and M.pad_aim_slowdown or 1
+			-- Aim assist: slower while the reticle sits on an enemy.
+			if M.pad_aim_assist and M.clock - (M.assist_at or -10) < 0.15 then
+				mult = mult * M.aim_assist_slowdown
+			end
 			local sy = M.pad_invert_y and -stick.y or stick.y
-			M.yaw = M.yaw - stick_curve(stick.x) * math.rad(M.pad_yaw_speed) * mult * dt
-			M.pitch_rad = M.pitch_rad - stick_curve(sy) * math.rad(M.pad_pitch_speed) * mult * dt
-			looked_vertically = looked_vertically or stick_curve(sy) ~= 0
+			local sx, sy2 = stick_curve(stick.x), stick_curve(sy)
+			M.yaw = M.yaw - sx * math.rad(M.pad_yaw_speed) * mult * dt
+			M.pitch_rad = M.pitch_rad - sy2 * math.rad(M.pad_pitch_speed) * mult * dt
+			looked_vertically = looked_vertically or sy2 ~= 0
+			if sx ~= 0 or sy2 ~= 0 then
+				M.look_at = M.clock
+			end
 		end
+	end
+
+	-- Auto-centre: running with the look input idle eases the view round
+	-- behind the body (which faces the way you run when out of combat).
+	if M.auto_center and dt and not M.combat_now and not M.aiming_now and (M.move_amount or 0) > 0.3
+		and (not M.auto_center_sprint_only or M.sprinting)
+		and M.clock - (M.look_at or -10) > M.auto_center_delay and M.local_unit and Unit.alive(M.local_unit) then
+		local f = Quaternion.forward(Unit.local_rotation(M.local_unit, 0))
+		local d = math.atan2(-f.x, f.y) - M.yaw
+		d = math.atan2(math.sin(d), math.cos(d))
+		M.yaw = M.yaw + d * math.min(1, dt * M.auto_center_rate)
+	end
+	-- Death cam with nobody to follow: slowly orbit the body.
+	if M.spectate_orbit and dt then
+		M.yaw = M.yaw + 0.35 * dt
 	end
 
 	-- Letting go of aim eases the view back to level (the default tilt),
@@ -759,15 +1011,25 @@ local function update_camera(cm, dt)
 	-- Recoil kick: an upward offset that settles back.
 	M.recoil = (M.recoil or 0) * math.exp(-(dt or 0) * M.recoil_recover)
 
+	-- HD2 feel, eased: closer and further over the shoulder while aiming, a
+	-- little further back and wider while sprinting, lower while prone.
+	local k = math.min(1, (dt or 0) * 8)
+	M.aim_blend = ease(M.aim_blend, M.aiming_now and 1 or 0, k)
+	M.sprint_blend = ease(M.sprint_blend, (M.sprinting and not M.aiming_now) and 1 or 0, k)
+	M.cur_height = ease(M.cur_height, M.downed and M.prone_height or M.height, k)
+	local dist_scale = (1 + (M.aim_distance_scale - 1) * M.aim_blend)
+		* (1 + (M.sprint_distance_scale - 1) * M.sprint_blend)
+	local shoulder_scale = 1 + (M.aim_shoulder_scale - 1) * M.aim_blend
+
 	-- Zoom while aiming.
 	if M.saved and M.saved.fov then
-		local want = M.saved.fov * (M.aiming_now and M.aim_zoom or 1)
+		local want = M.saved.fov * (M.aiming_now and M.aim_zoom or 1) * (1 + (M.sprint_fov - 1) * M.sprint_blend)
 		M.cur_fov = (M.cur_fov or M.saved.fov) + (want - (M.cur_fov or M.saved.fov)) * math.min(1, (dt or 0) * 10)
 		cm.fov = M.cur_fov
 	end
 
-	local side = flat_right(M.yaw) * (M.shoulder * M.cur_side)
-	local distance = camera_distance(cm, side, dt)
+	local side = flat_right(M.yaw) * (M.shoulder * shoulder_scale * M.cur_side)
+	local distance = camera_distance(cm, side, dt, M.distance * dist_scale, M.cur_height)
 
 	cm.follow_spin = M.yaw
 	cm.follow_angle = M.pitch_rad - M.recoil
@@ -777,10 +1039,14 @@ local function update_camera(cm, dt)
 
 	-- The game eases the camera toward its goal at 0.6 x dt per frame, which
 	-- suits a top-down view but makes an orbit camera trail behind mouse
-	-- turns. Snap to the goal instead. Also skip the push that keeps the
-	-- top-down view point inside the map; a low camera trips it constantly.
+	-- turns. Close on it much faster (camera_smoothing per second), but never
+	-- past the goal in one frame (1 / dt is a snap). Also skip the push that
+	-- keeps the top-down view point inside the map; a low camera trips it
+	-- constantly.
 	if dt and dt > 0 then
-		cm.follow_position_interp = 1 / dt
+		local snap = 1 / dt
+		local rate = M.camera_smoothing or 0
+		cm.follow_position_interp = rate > 0 and math.min(rate, snap) or snap
 	end
 	cm.ignore_level_bounds = true
 
@@ -788,7 +1054,7 @@ local function update_camera(cm, dt)
 	cm.follow_offset = cm.follow_offset or {}
 	cm.follow_offset.x = side.x + 1
 	cm.follow_offset.y = side.y + 1
-	cm.follow_offset.z = M.height
+	cm.follow_offset.z = M.cur_height
 
 	for _, props in pairs(cm.targets or {}) do
 		if M.saved.look_ahead[props] == nil then
@@ -824,6 +1090,19 @@ on_require("lua/managers/camera_manager", function()
 				restore_camera(self)
 			end
 		end
+		if M.prone_key and key_pressed(M.prone_key) then
+			M.prone_request = true
+		end
+		-- F11: camera smoothing on/off, to compare the feel in-game.
+		if key_pressed("f11") then
+			if (M.camera_smoothing or 0) > 0 then
+				M.camera_smoothing_saved, M.camera_smoothing = M.camera_smoothing, 0
+			else
+				M.camera_smoothing = M.camera_smoothing_saved or 30
+			end
+			log("camera smoothing: %s (F11 toggles)",
+				M.camera_smoothing > 0 and string.format("%g per second", M.camera_smoothing) or "off (snaps to the body)")
+		end
 		if key_pressed("f7") then
 			local list, at = M.fog_scales, 1
 			for i, v in ipairs(list) do
@@ -834,6 +1113,51 @@ on_require("lua/managers/camera_manager", function()
 			M.fog_scale = list[at % #list + 1]
 			M.fog_applied = false -- re-applied with the new scale next frame
 			log("view distance: fog x%g (F7 for next)", M.fog_scale)
+		end
+	end
+
+	-- Your own avatar on the bridge (called under pcall every frame there, so
+	-- no closure).
+	local function own_avatar(players)
+		local avatar
+		for _, p in pairs(players or {}) do
+			if p.player_go and p.player_go:owned() then
+				local u = p.player_go:get("avatar_unit")
+				if u and Unit.alive(u) then
+					avatar = u
+				end
+			end
+		end
+		return avatar
+	end
+
+	-- One reused targets table holding just the unit the camera follows.
+	local DEATH_PROPS = { bias = 1, look_ahead = 0, is_reverse = false }
+	local target_buf = {}
+	local function single_target(unit, props)
+		for k in pairs(target_buf) do
+			target_buf[k] = nil
+		end
+		target_buf[unit] = props
+		return target_buf
+	end
+
+	-- Mouse throws aim at the point under the cursor, which the mod pins to
+	-- the crosshair: hand the throw the crosshair's world point instead of
+	-- the cursor projected to the camera's height.
+	local function first_replaced(repl, _, ...)
+		return repl, ...
+	end
+	if type(cm.screen_to_world) == "function" and not is_patched(cm, "s2w") then
+		local original_s2w = cm.screen_to_world
+		mark_patched(cm, "s2w")
+		cm.screen_to_world = function(self, v, ...)
+			if M.throw_to_crosshair and M.throwing and M.aim_point and camera_active() and not M.on_bridge
+				and M.shot_screen and is_engine_object(v)
+				and math.abs(v.x - M.shot_screen[1]) < 4 and math.abs(v.y - M.shot_screen[2]) < 4 then
+				return first_replaced(Vector3Aux.unbox(M.aim_point), original_s2w(self, v, ...))
+			end
+			return original_s2w(self, v, ...)
 		end
 	end
 
@@ -870,21 +1194,18 @@ on_require("lua/managers/camera_manager", function()
 			end
 		end
 		M.was_on = on
+		-- Weapon ranges follow the mod on/off state, whatever the scene.
+		local want = M.on()
+		if want ~= M.range_scaled_on and M.apply_range_scaling then
+			M.range_scaled_on = want
+			try("range toggle", M.apply_range_scaling, want)
+		end
 
 		local bridge_targets
 		M.on_bridge = false
 		if M.enabled and M.bridge_camera and self.state == "follow_menu" and in_game_cursor() then
-			local avatar
-			pcall(function()
-				for _, p in pairs(players or {}) do
-					if p.player_go and p.player_go:owned() then
-						local u = p.player_go:get("avatar_unit")
-						if u and Unit.alive(u) then
-							avatar = u
-						end
-					end
-				end
-			end)
+			local ok, avatar = pcall(own_avatar, players)
+			avatar = ok and avatar or nil
 			if avatar then
 				if not M.bridge_logged then
 					M.bridge_logged = true
@@ -897,22 +1218,45 @@ on_require("lua/managers/camera_manager", function()
 			end
 		end
 		try("toggle", check_toggle_keys, self)
-		try("camera", update_camera, self, dt)
-		if M.update_bend_amount then
-			try("spine amount", M.update_bend_amount, dt)
-		end
 		-- Not camera_active(): keep the view distance while the pause menu is up.
 		-- Missions only: the bridge's shading environment lacks the fog
 		-- variables, and reading a missing one crashes the engine outright.
 		local mission = M.on() and self.state == "follow" and not M.on_bridge
+		-- Co-op: the vanilla camera frames every player; follow only yours.
+		-- Dead (death_cam): follow the nearest living teammate, or orbit your
+		-- body. Swapped before the camera update so collision uses the right
+		-- pivot, and put back after the vanilla update.
+		local coop_targets
+		if mission and not bridge_targets and M.local_unit and self.targets then
+			local follow = M.local_unit
+			M.spectate_orbit = false
+			if M.death_cam and M.local_dead then
+				local mate = M.teammates and M.teammates[1]
+				if mate and Unit.alive(mate) then
+					follow = mate
+				elseif Unit.alive(M.local_unit) then
+					M.spectate_orbit = true
+				end
+			end
+			local own = self.targets[M.local_unit]
+			local several = next(self.targets, next(self.targets)) ~= nil
+			if follow ~= M.local_unit or (own and several) then
+				coop_targets = self.targets
+				self.targets = single_target(follow, self.targets[follow] or own or DEATH_PROPS)
+			end
+		end
+		try("camera", update_camera, self, dt)
+		if M.spine_bend and M.update_bend_amount then
+			try("spine amount", M.update_bend_amount, dt)
+		end
+		if mission and M.update_aim_assist then
+			try("aim assist", M.update_aim_assist)
+		end
 		try("view distance", update_view_distance, self, mission)
 		try("sky", update_sky, self, mission)
-		-- Co-op: the vanilla camera frames every player; follow only yours.
-		local coop_targets
-		if mission and not bridge_targets and M.local_unit and self.targets and self.targets[M.local_unit]
-			and next(self.targets, next(self.targets)) ~= nil then
-			coop_targets = self.targets
-			self.targets = { [M.local_unit] = coop_targets[M.local_unit] }
+		try("weather", update_weather, self, mission)
+		if M.patch_prone_fire then
+			try("prone fire", M.patch_prone_fire)
 		end
 		return finish_update(self, coop_targets, bridge_targets, original_update(self, dt, players, ...))
 	end
@@ -927,13 +1271,26 @@ on_require("lua/managers/camera_manager", function()
 		M.last_aim, M.aim_point, M.shot_screen, M.combat_now, M.aiming_now = nil, nil, nil, false, false
 		M.combat_until, M.map_open, M.spine_written, M.spine_base = 0, false, nil, nil
 		M.patrols, M.patrols_at, M.objectives, M.objectives_at = nil, nil, nil, nil
-		M.hit_seen, M.ping_request, M.throwing = nil, false, false
+		M.hit_seen, M.ping_request, M.throwing, M.crawl_firing = nil, false, false, false
+		M.input_fields_logged, M.back_logged_at = false, nil
+		M.dressed = false
+		for j = #M.props, 1, -1 do
+			M.props[j] = nil
+		end
 		M.coop_blocked, M.coop_blocked_since = true, nil
+		M.world_gui, M.strat_list_src, M.strat_queue_src, M.strat_probe_at = nil, nil, nil, nil
+		M.weather_key, M.scene_serial, M.enemy_count, M.enemies_at = nil, (M.scene_serial or 0) + 1, 0, nil
+		M.local_dead, M.spectate_orbit, M.hit_from, M.hit_from_at, M.assist_at = false, false, nil, nil, nil
+		M.sprinting, M.move_amount, M.downed, M.callout_pending = false, 0, false, false
+		for j = #M.teammates, 1, -1 do
+			M.teammates[j] = nil
+		end
 		if M.forget_units then
 			M.forget_units()
 		end
 		M.saved, M.yaw, M.cur_distance, M.cur_fov, M.recoil = nil, nil, nil, nil, 0
 		M.fog_applied, M.fog_base, M.saved_far, M.view_frames = false, nil, nil, 0
+		M.fog_graded, M.fog_color_base, M.dof_vars_set, M.dof_amount_set = false, nil, false, nil
 		-- The sky GUI belonged to the old world, which destroyed it.
 		M.sky_gui, M.sky_color, M.engine_sky = nil, nil, nil
 		M.environment, M.own_mark, M.own_mark_armed = nil, nil, false
@@ -954,10 +1311,24 @@ local function flat(v)
 	return Vector3(v.x, v.y, 0)
 end
 
+-- Frame number (the stats hook counts camera updates), for work that several
+-- hooks want in the same frame and need computing only once.
+local function frame_number()
+	return M.stats.frames
+end
+
 -- World point under the crosshair: cast along the camera's view ray, the
 -- same way bullets collide ("damage_ray"), starting past the player so the
--- ray cannot hit them.
+-- ray cannot hit them. Cast once per frame: the aim hook, the shot marker
+-- and the throw-range label all ask (boxed, since engine vectors are
+-- temporaries that don't survive the frame).
+local ray_cache = { frame = -1, pos = {}, fwd = {} }
+
 local function crosshair_point()
+	local frame = frame_number()
+	if ray_cache.frame == frame then
+		return Vector3Aux.unbox(ray_cache.pos), Vector3Aux.unbox(ray_cache.fwd)
+	end
 	local cam_pos = CameraManager:get_position()
 	local fwd = Quaternion.forward(CameraManager:get_rotation())
 	local start = cam_pos + fwd * ((M.cur_distance or M.distance) + 0.5)
@@ -965,9 +1336,26 @@ local function crosshair_point()
 		M.aim_distance, "closest", "types", "both", "collision_filter", "damage_ray")
 	if hit and pos then
 		M.stats.ray_hit = M.stats.ray_hit + 1
-		return pos, fwd
+	else
+		pos = start + fwd * M.aim_distance
 	end
-	return start + fwd * M.aim_distance, fwd
+	ray_cache.frame = frame
+	Vector3Aux.box(ray_cache.pos, pos)
+	Vector3Aux.box(ray_cache.fwd, fwd)
+	return pos, fwd
+end
+
+-- A weapon's settings table never changes for the life of the unit, and the
+-- manager's lookup runs several times a frame while aiming.
+local weapon_settings = setmetatable({}, { __mode = "k" })
+
+local function settings_of(weapon)
+	local s = weapon_settings[weapon]
+	if s == nil then
+		s = LuaSettingsManager:get_settings_by_unit(weapon)
+		weapon_settings[weapon] = s -- a nil answer is asked again next time
+	end
+	return s
 end
 
 -- Muzzle position for the given body facing, from the weapon's settings.
@@ -978,7 +1366,7 @@ local function muzzle_position(unit, facing)
 	if not (weapon and Unit.alive(weapon)) then
 		return pos
 	end
-	local settings = LuaSettingsManager:get_settings_by_unit(weapon)
+	local settings = settings_of(weapon)
 	local offset = settings and settings.weapon_info and settings.weapon_info.ray_source_offset
 	if not offset then
 		return pos
@@ -990,7 +1378,10 @@ end
 -- Direction (flat) the body must face for the muzzle line to pass through
 -- the crosshair point. One refinement step: the muzzle moves as the body
 -- turns, so solve from the centre first, then again from the muzzle.
-local function crosshair_direction(unit)
+-- Solved once per frame per unit: the shot marker and the aim both need it.
+local dir_cache = { frame = -1, unit = nil, dir = {}, target = {} }
+
+local function solve_crosshair_direction(unit)
 	local target, cam_fwd = crosshair_point()
 	local dir = flat(target - Unit.world_position(unit, 0))
 	if Vector3.length(dir) < M.min_aim_distance then
@@ -1001,6 +1392,18 @@ local function crosshair_direction(unit)
 	if Vector3.length(refined) >= M.min_aim_distance then
 		dir = Vector3.normalize(refined)
 	end
+	return dir, target
+end
+
+local function crosshair_direction(unit)
+	local frame = frame_number()
+	if dir_cache.frame == frame and dir_cache.unit == unit then
+		return Vector3Aux.unbox(dir_cache.dir), Vector3Aux.unbox(dir_cache.target)
+	end
+	local dir, target = solve_crosshair_direction(unit)
+	dir_cache.frame, dir_cache.unit = frame, unit
+	Vector3Aux.box(dir_cache.dir, dir)
+	Vector3Aux.box(dir_cache.target, target)
 	return dir, target
 end
 
@@ -1065,7 +1468,7 @@ local function update_shot_marker(unit)
 	local dir, target = crosshair_direction(unit)
 	local from = muzzle_position(unit, dir)
 	local range, drop = 30, 1.5
-	local info = LuaSettingsManager:get_settings_by_unit(weapon)
+	local info = settings_of(weapon)
 	info = info and info.weapon_info
 	if info then
 		range = (info.range or range) * M.range_scale
@@ -1078,12 +1481,114 @@ local function update_shot_marker(unit)
 	M.shot_point = Vector3Aux.box(M.shot_point or {}, point)
 	local sp = CameraManager:world_to_screen(point)
 	if sp and sp.z > 0 then
-		M.shot_screen = { sp.x, sp.y }
+		local ss = M.shot_screen_buf or {}
+		ss[1], ss[2] = sp.x, sp.y
+		M.shot_screen_buf, M.shot_screen = ss, ss
 	end
+end
+
+-- The mover keeps each player inside the camera's view (with a margin) by
+-- refusing steps that leave it; with a close, zoomed camera the body sits
+-- near that margin, so walking backwards stopped. The mover's own switch
+-- for it is per player: turn it off for you while the mod's camera is up,
+-- and put the game's value back otherwise. (The camera manager's frustum
+-- test itself is left alone: enemy spawners and AI rely on it.)
+local EMPTY_STATE = {}
+
+-- The engine names its own types: a unit's type() is "unit", a vector's is
+-- its class. Anything that isn't a plain Lua value is an engine object.
+local PLAIN = { ["nil"] = true, boolean = true, number = true, string = true, table = true, ["function"] = true }
+
+local function is_engine_object(v)
+	return not PLAIN[type(v)]
+end
+
+-- Diagnostics for "can't walk backwards while aiming". The input code
+-- sends the stick to the mover itself (a "set_movement" command) before
+-- this copy of it reaches the character, so log the stick, this copy and
+-- the camera yaw side by side whenever you aim and move (every 1.5 s).
+local PAD_LEFT_STICK = { "left" }
+
+local function log_backward_move(unit, data, mv)
+	if not M.aiming_now or not M.yaw or M.clock - (M.back_logged_at or -10) < 1.5 then
+		return
+	end
+	if type(mv) == "table" then
+		mv = Vector3Aux.unbox(mv)
+	elseif not is_engine_object(mv) then
+		return
+	end
+	local rel = Vector3.dot(flat_forward(M.yaw), mv)
+	local stick = M.player_pad and pad_value(M.player_pad, "axis", PAD_LEFT_STICK)
+	local stick_len = stick and Vector3.length(stick) or 0
+	if Vector3.length(mv) < 0.3 and stick_len < 0.3 then
+		return
+	end
+	M.back_logged_at = M.clock
+	log("aim+move: stick %s, move copy %.2f,%.2f (along view %.2f), yaw %.0f deg",
+		stick and string.format("%.2f,%.2f", stick.x, stick.y) or "n/a", mv.x, mv.y, rel, math.deg(M.yaw))
+	local ok, cs = pcall(EntityAux.state, unit, "character")
+	cs = ok and type(cs) == "table" and cs or EMPTY_STATE
+	-- The mover's own state, from the entity manager (the character's
+	-- mover_state reference holds only the velocity).
+	local ms = EMPTY_STATE
+	local em = M.entity_manager
+	if em then
+		local ok3, movers = pcall(em.get_master_entities, em, "mover")
+		local ctx = ok3 and type(movers) == "table" and movers[unit]
+		if type(ctx) == "table" and type(ctx.state) == "table" then
+			ms = ctx.state
+		end
+	end
+	local vel = ms.velocity or (type(cs.mover_state) == "table" and cs.mover_state.velocity)
+	local speed = -1
+	if type(vel) == "table" then
+		speed = Vector3.length(Vector3Aux.unbox(vel))
+	end
+	local held = type(ms.movement) == "table" and Vector3Aux.unbox(ms.movement)
+	log("  mover: wanted %s, velocity_scale %s, slow %s, accel %s, decel %s, lock %s/%s, movement %s, constant %s",
+		tostring(ms.wanted_move_speed), tostring(ms.velocity_scale), tostring(ms.slow_multiplier),
+		tostring(ms.acceleration), tostring(ms.deceleration), tostring(ms.lock_direction),
+		tostring(ms.lock_direction_backwards), held and string.format("%.2f,%.2f", held.x, held.y) or type(ms.movement),
+		tostring(ms.constant_movement))
+	local state = M.state_name_of and M.state_name_of(cs.current_state) or tostring(cs.current_state)
+	log("backward while aiming: move %.2f,%.2f (rel %.2f), velocity %.2f, wanted speed %s, state %s, forced rot %s, aim %s",
+		mv.x, mv.y, rel, speed, tostring(cs.wanted_move_speed), state, tostring(cs.forced_rotation_speed),
+		tostring(M.aiming_now))
 end
 
 local function apply_crosshair_aim(input_component, unit, data)
 	M.local_unit = unit
+	-- Movement state for the camera: sprinting, how hard you're moving, prone.
+	M.sprinting = data.sprint == true or (type(data.sprint_amount) == "number" and data.sprint_amount > 0.5)
+	-- The stick arrives as "movement", a boxed table (x, y, z); engine calls
+	-- with the wrong argument type crash past any pcall, so measure a boxed
+	-- vector by hand and call the engine only on a real one.
+	local mv = data.movement or data.move
+	local amount = 0
+	if type(mv) == "table" and type(mv.x) == "number" and type(mv.y) == "number" then
+		amount = math.sqrt(mv.x * mv.x + mv.y * mv.y + (type(mv.z) == "number" and mv.z * mv.z or 0))
+	elseif type(mv) == "number" then
+		amount = math.abs(mv)
+	elseif is_engine_object(mv) then
+		amount = Vector3.length(mv)
+	end
+	M.move_amount = amount
+	-- Once per mission: what the character's input copy actually holds.
+	if not M.input_fields_logged then
+		M.input_fields_logged = true
+		local names = {}
+		for k, v in pairs(data) do
+			if type(k) == "string" then
+				names[#names + 1] = k .. "=" .. type(v)
+			end
+		end
+		table.sort(names)
+		log("input fields: %s", table.concat(names, " "))
+	end
+	try("backward log", log_backward_move, unit, data, mv)
+	local ok2, cs = pcall(EntityAux.state, unit, "character")
+	M.downed = ok2 and type(cs) == "table" and cs.is_downed == true
 	if not M.vertical_aim then
 		try("shot marker", update_shot_marker, unit)
 	end
@@ -1396,9 +1901,11 @@ end
 M.update_bend_amount = update_bend_amount
 M.cycle_spine_mode = cycle_spine_mode
 
+-- The spine bend is an experiment that the engine defeats (see spine_bend);
+-- with it off, neither of its per-frame hooks is installed.
 local function patch_world_proxy()
 	local wp = rawget(_G, "WorldProxy")
-	if not wp or is_patched(wp, "anim") then
+	if not M.spine_bend or not wp or is_patched(wp, "anim") then
 		return
 	end
 	local original = wp.set_update_animations_callback
@@ -1467,11 +1974,11 @@ local function patch_viewport_proxy()
 		end
 		return r
 	end
-	vp.render = function(self, ...)
-		if M.spine_bend then
+	if M.spine_bend then
+		vp.render = function(self, ...)
 			try("spine render", spine_render_check)
+			return original(self, ...)
 		end
-		return original(self, ...)
 	end
 	log("render hook installed")
 end
@@ -1600,7 +2107,7 @@ on_require("lua/components/input_component", function()
 		CameraManager.follow_spin = spin
 	end
 
-	local R3, LB, D_UP = { "right_thumb", "r3" }, { "left_shoulder", "l1" }, { "d_up" }
+	local R3, LB, D_UP, D_DOWN = { "right_thumb", "r3" }, { "left_shoulder", "l1" }, { "d_up" }, { "d_down" }
 	local function pad_extras(data)
 		local pad = M.player_pad
 		if not pad then
@@ -1611,12 +2118,88 @@ on_require("lua/components/input_component", function()
 			M.swap_shoulder = true
 			data.melee = false
 		end
-		-- D-pad up (without LB, which is stratagem input) pings.
+		-- D-pad up (without LB, which is stratagem input) pings; the rest of
+		-- the D-pad keeps the game's own callouts (prone is hold-dive, or
+		-- the keyboard prone key). With the settings menu open the D-pad
+		-- drives the menu and the game's own D-pad actions are held off.
+		if M.menu_open then
+			data.communication_yes, data.communication_no = false, false
+			data.communication_stay, data.communication_move = false, false
+			return
+		end
 		local lb = pad_value(pad, "button", LB)
 		if not (lb and lb > 0.5) and pad_pressed(pad, D_UP) then
 			M.ping_request = true
 			data.communication_yes = false
 		end
+	end
+
+	-- Hold the dive button to go prone, tap it to dive (HD2). The game dives
+	-- on the press, so the press is held back while the button is down: a
+	-- release before prone_hold dives then, a hold past it goes prone (or
+	-- stands you up from the crawl) and the dive is dropped.
+	-- The raw dive button: B / circle on a pad, or the keyboard key the
+	-- "dodge_button" binding names (the input table only carries the
+	-- filtered press).
+	local PAD_DIVE = { "b", "circle" }
+	local function dive_key_index()
+		if M.dive_key_index ~= nil then
+			return M.dive_key_index
+		end
+		M.dive_key_index = false
+		local list = type(M.last_bindings) == "table" and M.last_bindings.keyboard_mouse
+		if type(list) == "table" then
+			for _, e in ipairs(list) do
+				if type(e) == "table" and e.output_name == "dodge_button" and type(e.key) == "string" then
+					local ok, idx = pcall(Keyboard.button_index, e.key)
+					if ok and idx then
+						M.dive_key_index = idx
+						log("dive hold: keyboard dive key is %s", e.key)
+					end
+					break
+				end
+			end
+		end
+		return M.dive_key_index
+	end
+	local function dive_button_down()
+		local pad = M.player_pad
+		if pad then
+			local v = pad_value(pad, "button", PAD_DIVE)
+			return v ~= nil and v > 0.5
+		end
+		local idx = dive_key_index()
+		if idx then
+			local ok, v = pcall(Keyboard.button, idx)
+			return ok and type(v) == "number" and v > 0.5
+		end
+		return false
+	end
+
+	local function dive_hold(data)
+		if not (M.prone_hold and M.prone_hold > 0) then
+			return
+		end
+		local down = dive_button_down()
+		if down then
+			if not M.dive_down then
+				M.dive_down_at, M.dive_consumed = M.clock, false
+			end
+			if not M.dive_consumed and M.clock - M.dive_down_at >= M.prone_hold then
+				M.dive_consumed = true
+				M.prone_request = true
+			end
+			if data.dodge then
+				data.dodge = false
+				M.dive_pending = not M.dive_consumed
+			end
+		elseif M.dive_down then
+			if M.dive_pending and not M.dive_consumed then
+				data.dodge = true
+			end
+			M.dive_pending, M.dive_consumed = false, false
+		end
+		M.dive_down = down
 	end
 
 	ic.queue_command_master = function(self, unit, component, command, data, ...)
@@ -1630,6 +2213,12 @@ on_require("lua/components/input_component", function()
 		if component == "character" and command == "input" and type(data) == "table"
 			and unit == M.local_unit and camera_active() and not M.on_bridge then
 			try("pad extras", pad_extras, data)
+			try("dive hold", dive_hold, data)
+			-- A ping also calls out "move" (the game's own voice line and icon).
+			if M.callout_pending then
+				M.callout_pending = false
+				data.communication_move = true
+			end
 		end
 		if component == "character" and command == "input" and type(data) == "table"
 			and data.aim and camera_active() then
@@ -1670,10 +2259,381 @@ on_require("lua/character_states/character_state_machine", function()
 		try("turn", force_turn, unit, context)
 		return ...
 	end
+	-- Every character (enemies too) runs this each frame; only the player's
+	-- own update needs the protected call. The prone key acts here, before
+	-- the state machine runs, so a state change set now is applied this frame.
 	sm.update = function(unit, context, ...)
+		if unit == M.local_unit and M.prone_request and M.prone_toggle then
+			try("prone toggle", M.prone_toggle, unit, context)
+		end
+		if unit ~= M.player_unit then
+			return original(unit, context, ...)
+		end
 		return after_update(unit, context, original(unit, context, ...))
 	end
 	log("turn hook installed")
+end)
+
+---------------------------------------------------------------------------
+-- Prone fire. Downed (after a dive), the game only shoots from its "downed
+-- aim" states, which it enters once the aim vector is non-zero; a bare fire
+-- press does nothing there. Give the downed states an aim toward the
+-- crosshair whenever fire is held, so the next frame shoots. The state
+-- classes live in scripts without recoverable names, so they are patched
+-- once their globals exist (polled from the camera update).
+---------------------------------------------------------------------------
+
+-- (Scoped in a block: a Lua chunk may hold at most 200 locals. Entry points
+-- are M.patch_prone_fire, M.prone_toggle and M.state_name_of.)
+do
+
+local function prone_fire_fix(unit, context)
+	if unit ~= M.local_unit or not (M.prone_fire and camera_active() and not M.on_bridge) then
+		return
+	end
+	local st = type(context) == "table" and context.state
+	local input = st and st.input
+	if type(input) ~= "table" or not (input.fire or input.fire_auto) then
+		return
+	end
+	local aim = input.aim
+	if type(aim) == "table" and M.last_aim then
+		local x, y = tonumber(aim.x) or 0, tonumber(aim.y) or 0
+		if x * x + y * y < 0.0001 then
+			Vector3Aux.box(aim, Vector3Aux.unbox(M.last_aim))
+		end
+	end
+end
+
+local function prone_single_shot(context)
+	local st = type(context) == "table" and context.state
+	local weapon = st and st.current_weapon
+	if weapon and Unit.alive(weapon) then
+		EntityAux.queue_command_master_interface(weapon, "weapon", "firing_single")
+	end
+end
+
+-- Class table -> global name, from _G; rebuilt when a table is unknown
+-- (the state scripts are loaded again per mission), at most every 5 s.
+local state_names, state_names_at = {}, -10
+
+local function state_name(cls)
+	local name = state_names[cls]
+	if not name and M.clock - state_names_at > 5 then
+		state_names_at = M.clock
+		for k, v in pairs(_G) do
+			if type(k) == "string" and type(v) == "table" and string.sub(k, 1, 14) == "CharacterState" then
+				state_names[v] = k
+			end
+		end
+		name = state_names[cls]
+	end
+	return name or tostring(cls)
+end
+M.state_name_of = state_name
+
+local function prone_state(name)
+	return string.find(name, "Downed") or string.find(name, "Crawl") or string.find(name, "Dodge")
+end
+
+local function trace_state_change(context, new_state)
+	local name = state_name(new_state)
+	if not prone_state(name) and not prone_state(state_name(M.last_state or false)) then
+		M.last_state = new_state
+		return
+	end
+	M.last_state = new_state
+	local st = type(context) == "table" and context.state
+	local input = st and st.input
+	local aim = type(input) == "table" and input.aim
+	local aim_len = type(aim) == "table" and ((tonumber(aim.x) or 0) ^ 2 + (tonumber(aim.y) or 0) ^ 2) or -1
+	log("state -> %s (fire %s, aim len^2 %.3f, mod combat %s)", name,
+		tostring(type(input) == "table" and input.fire), aim_len, tostring(M.combat_now))
+end
+
+-- Prone proper: a dive while moving lands in CharacterStateCrawl, which
+-- only knows how to stand up. Fire from it the way the standing fire state
+-- does: one single-shot command as fire goes down, the auto command while
+-- held, and a stop when it is released or the state is left.
+local function crawl_fire(unit, context)
+	if unit ~= M.local_unit or not (M.prone_fire and camera_active() and not M.on_bridge) then
+		return
+	end
+	local st = type(context) == "table" and context.state
+	local input = st and st.input
+	local weapon = st and st.current_weapon
+	if type(input) ~= "table" or not (weapon and Unit.alive(weapon)) then
+		return
+	end
+	local held = input.fire and true or false
+	if held and not M.crawl_firing then
+		EntityAux.queue_command_master_interface(weapon, "weapon", "firing_single")
+		if not M.crawl_fire_logged then
+			M.crawl_fire_logged = true
+			log("prone fire: shooting while crawling")
+		end
+	end
+	if held or M.crawl_firing then
+		EntityAux.queue_command_master_interface(weapon, "weapon", "firing_auto", held and input.fire_auto or false)
+	end
+	-- No crawling while firing (as HD2): the crawl's speed comes from the
+	-- character's wanted speed, so zero it while firing and give the crawl
+	-- speed back on release. The body turns toward the crawl direction in
+	-- this state (only the aim states turn to the aim), so point it at the
+	-- crosshair ourselves; with no movement the game's own turn code idles.
+	if held then
+		if M.crawl_speed_saved == nil then
+			M.crawl_speed_saved = st.wanted_move_speed or false
+		end
+		st.wanted_move_speed = 0
+		if M.last_aim then
+			local aim = Vector3Aux.unbox(M.last_aim)
+			if Vector3.length(aim) > 0.5 then
+				Unit.set_local_rotation(unit, 0, Quaternion.look(aim, Vector3.up()))
+			end
+			if M.clock - (M.prone_face_logged_at or -10) > 2 then
+				M.prone_face_logged_at = M.clock
+				local facing = flat(Quaternion.forward(Unit.local_rotation(unit, 0)))
+				local err = math.deg(math.acos(math.max(-1, math.min(1, Vector3.dot(Vector3.normalize(facing), aim)))))
+				log("prone fire: facing is %.0f deg off the crosshair", err)
+			end
+		end
+	elseif M.crawl_speed_saved ~= nil then
+		local info = type(context.settings) == "table" and context.settings.character_info
+		st.wanted_move_speed = (type(info) == "table" and info.move_speed_crawl) or M.crawl_speed_saved or nil
+		M.crawl_speed_saved = nil
+	end
+	M.crawl_firing = held
+end
+
+-- The prone key: from a standing state straight into the crawl state (the
+-- same one a dive lands in), and from the crawl state back up the game's
+-- own way (its dodge input stands you up with the roll animation).
+local STANDING = {
+	CharacterStateIdle = true, CharacterStateWalk = true, CharacterStateSprint = true,
+	CharacterStateAim = true, CharacterStateAimWalk = true,
+}
+
+function M.prone_toggle(unit, context)
+	M.prone_request = false
+	local st = type(context) == "table" and context.state
+	if not st or st.new_state ~= nil or not (camera_active() and not M.on_bridge) then
+		return
+	end
+	local name = state_name(st.current_state)
+	if name == "CharacterStateCrawl" then
+		if type(st.input) == "table" then
+			st.input.dodge = true
+		end
+	elseif STANDING[name] then
+		local crawl = rawget(_G, "CharacterStateCrawl")
+		if crawl then
+			-- The crawl is the dive's landing state: its update compares the
+			-- dive timer the dive set on the way in. Seed what a finished dive
+			-- would have left: timer at the end of the dive (no slide, timer
+			-- frozen until you get up), get-up not started.
+			local info = type(context.settings) == "table" and context.settings.character_info
+			st.dive_timer = type(info) == "table" and tonumber(info.dive_duration) or 1
+			st.dive_get_up = false
+			CharacterStateMachine.change_state(unit, context, crawl)
+			if not M.prone_key_logged then
+				M.prone_key_logged = true
+				log("prone: went prone from %s", name)
+			end
+		end
+	end
+end
+
+local function crawl_fire_stop(unit, context)
+	if unit ~= M.local_unit then
+		return
+	end
+	M.crawl_speed_saved = nil -- the next state sets its own speed
+	if not M.crawl_firing then
+		return
+	end
+	M.crawl_firing = false
+	local st = type(context) == "table" and context.state
+	local weapon = st and st.current_weapon
+	if weapon and Unit.alive(weapon) then
+		EntityAux.queue_command_master_interface(weapon, "weapon", "firing_auto", false)
+	end
+end
+
+-- Called every camera update: the state scripts are loaded again for each
+-- mission, so whatever table is current gets patched (is_patched is per
+-- table, so this is a few lookups a frame once done).
+function M.patch_prone_fire()
+	local idle, crawl = rawget(_G, "CharacterStateDownedIdle"), rawget(_G, "CharacterStateDownedCrawl")
+	local fire = rawget(_G, "CharacterStateDownedAimFire")
+	local prone = rawget(_G, "CharacterStateCrawl")
+	if not (idle and crawl and fire and prone) then
+		return
+	end
+	if type(prone.update) == "function" and not is_patched(prone, "prone") then
+		local original_update, original_exit = prone.update, prone.on_exit
+		mark_patched(prone, "prone")
+		prone.update = function(unit, context, ...)
+			try("crawl fire", crawl_fire, unit, context)
+			return original_update(unit, context, ...)
+		end
+		if type(original_exit) == "function" then
+			prone.on_exit = function(unit, context, ...)
+				try("crawl fire stop", crawl_fire_stop, unit, context)
+				return original_exit(unit, context, ...)
+			end
+		end
+		log("prone fire hooks installed (crawl)")
+	end
+	for _, cls in ipairs({ idle, crawl }) do
+		if type(cls.update) == "function" and not is_patched(cls, "prone") then
+			local original = cls.update
+			mark_patched(cls, "prone")
+			cls.update = function(unit, context, ...)
+				try("prone fire", prone_fire_fix, unit, context)
+				return original(unit, context, ...)
+			end
+		end
+	end
+	if type(fire.on_enter) == "function" and not is_patched(fire, "prone") then
+		local original = fire.on_enter
+		mark_patched(fire, "prone")
+		-- The downed fire state only ever sends "firing_auto", so semi-automatic
+		-- and burst weapons never fire there. The standing fire state sends one
+		-- "firing_single" as it is entered; do the same here.
+		fire.on_enter = function(unit, context, ...)
+			if unit == M.local_unit and M.prone_fire then
+				try("prone single shot", prone_single_shot, context)
+				if not M.prone_fire_logged then
+					M.prone_fire_logged = true
+					log("prone fire: shooting while downed")
+				end
+			end
+			return original(unit, context, ...)
+		end
+	end
+	-- Diagnostics: your character's downed-state changes, with the inputs
+	-- the states saw, so the log shows where prone fire stops.
+	local sm = rawget(_G, "CharacterStateMachine")
+	if sm and type(sm.change_state) == "function" and not is_patched(sm, "trace") then
+		local original = sm.change_state
+		mark_patched(sm, "trace")
+		sm.change_state = function(unit, context, new_state, ...)
+			if unit == M.local_unit then
+				try("state trace", trace_state_change, context, new_state)
+			end
+			return original(unit, context, new_state, ...)
+		end
+		log("prone fire hooks installed (downed, trace)")
+	end
+end
+
+end -- prone
+
+---------------------------------------------------------------------------
+-- Escort NPCs. Each one counts down while outside the camera's view and is
+-- killed (hitpoints set to -100) when the timer runs out. With the mod's
+-- camera they are out of view most of the time, so keep that timer topped
+-- up; dying to enemies is untouched.
+---------------------------------------------------------------------------
+
+on_require("lua/components/npc_escort_component", function()
+	local ec = rawget(_G, "NpcEscortComponent")
+	if not ec or type(ec.update_derived_master) ~= "function" or is_patched(ec, "offscreen") then
+		return
+	end
+	local original = ec.update_derived_master
+	mark_patched(ec, "offscreen")
+	local function keep_alive(context)
+		local st = type(context) == "table" and context.state
+		if st and type(st.outside_screen_timer) == "number" and M.escort_offscreen_safe and M.on() then
+			st.outside_screen_timer = 1000000
+		end
+	end
+	ec.update_derived_master = function(self, unit, context, ...)
+		try("escort", keep_alive, context)
+		return original(self, unit, context, ...)
+	end
+	log("escort hook installed")
+end)
+
+---------------------------------------------------------------------------
+-- Camera shake and hits. The game ships a camera shaker with presets
+-- (CameraShakeSettings) that only airstrikes and a few scripted events use.
+-- Shake on every explosion and when you take damage, as HD2 does, and
+-- remember where the hit came from for the damage arc on the HUD.
+---------------------------------------------------------------------------
+
+local function add_shake(preset_name, pos)
+	local presets = rawget(_G, "CameraShakeSettings")
+	local preset = presets and presets[preset_name]
+	if preset and CameraManager and CameraManager.add_shake then
+		CameraManager:add_shake(preset, Vector3Aux.box({}, pos))
+	end
+end
+
+on_require("lua/managers/explosion_manager", function()
+	local em = rawget(_G, "ExplosionManager")
+	if not em or type(em.do_explosion) ~= "function" or is_patched(em, "shake") then
+		return
+	end
+	local original = em.do_explosion
+	mark_patched(em, "shake")
+	local function shake(pos)
+		if M.camera_shake and camera_active() and not M.on_bridge and type(pos) == "table" then
+			add_shake(M.explosion_shake, Vector3Aux.unbox(pos))
+		end
+	end
+	-- do_explosion(self, unit, position (boxed), explosive_info, ...)
+	em.do_explosion = function(self, unit, pos, info, ...)
+		try("explosion shake", shake, pos)
+		return original(self, unit, pos, info, ...)
+	end
+	log("explosion shake hook installed")
+end)
+
+on_require("lua/components/health_component", function()
+	local hc = rawget(_G, "HealthComponent")
+	if not hc or type(hc.command_master) ~= "function" or is_patched(hc, "hits") then
+		return
+	end
+	local original = hc.command_master
+	mark_patched(hc, "hits")
+	local function on_hit(unit, data)
+		if unit ~= M.local_unit or not camera_active() or M.on_bridge then
+			return
+		end
+		M.hit_taken_at = M.clock
+		-- The damage carries the attacking unit and the owner of whatever did
+		-- the damage; prefer the attacker (a projectile's owner is the shooter,
+		-- but a melee hit's owner may be the limb).
+		local attacker = type(data) == "table" and (data.attacker_unit or data.owner_unit)
+		if is_engine_object(attacker) and attacker ~= unit and Unit.alive(attacker) then
+			M.hit_from = Vector3Aux.box(M.hit_from or {}, Unit.world_position(attacker, 0))
+			M.hit_from_at = M.clock
+			-- Diagnostics for the arc direction: the first few hits in detail.
+			M.hits_logged = (M.hits_logged or 0) + 1
+			if M.hits_logged <= 6 and M.yaw then
+				local d = flat(Unit.world_position(attacker, 0) - Unit.world_position(unit, 0))
+				local rel = math.atan2(-d.x, d.y) - M.yaw
+				rel = math.deg(math.atan2(math.sin(rel), math.cos(rel)))
+				log("hit: from %s (attacker %s, owner %s) %.1f m away, %.0f deg %s of view; angle_hit %s, power %s",
+					tostring(attacker), tostring(data.attacker_unit), tostring(data.owner_unit), Vector3.length(d),
+					math.abs(rel), rel > 0 and "left" or "right", tostring(data.angle_hit), tostring(data.power))
+			end
+		end
+		if M.camera_shake then
+			add_shake(M.hit_shake, Unit.world_position(unit, 0))
+		end
+	end
+	-- The "do_damage" command carries power and the damage source's owner.
+	hc.command_master = function(self, unit, context, command, data, ...)
+		if command == "do_damage" then
+			try("hit", on_hit, unit, data)
+		end
+		return original(self, unit, context, command, data, ...)
+	end
+	log("hit hook installed")
 end)
 
 ---------------------------------------------------------------------------
@@ -1721,6 +2681,23 @@ local function top_sections(n)
 	return #out > 0 and table.concat(out, ", ") or "-"
 end
 
+-- The mod sections with the slowest single frame this window, then cleared.
+local function max_sections(n)
+	local list = {}
+	for k, v in pairs(perf.win_sec_max) do
+		if v >= 0.5 then
+			list[#list + 1] = { k, v }
+		end
+		perf.win_sec_max[k] = 0
+	end
+	table.sort(list, function(a, b) return a[2] > b[2] end)
+	local out = {}
+	for i = 1, math.min(n, #list) do
+		out[i] = string.format("%s %.1f", list[i][1], list[i][2])
+	end
+	return #out > 0 and table.concat(out, ", ") or "-"
+end
+
 -- Once per frame, at the start of the camera update. The time since the
 -- previous call is the whole previous frame.
 local function perf_frame(cm)
@@ -1757,16 +2734,30 @@ local function perf_frame(cm)
 		perf.win_mod = perf.win_mod + perf.mod
 		perf.win_mod_max = math.max(perf.win_mod_max, perf.mod)
 		perf.win_worst = math.max(perf.win_worst, ms)
+		-- Frames too slow to count as hitches but slow enough to see: twice
+		-- the usual frame, or past a 60 Hz refresh.
+		if ms > typical * 2 then
+			perf.win_slow = perf.win_slow + 1
+		end
+		if ms > 16.7 then
+			perf.win_over16 = perf.win_over16 + 1
+		end
+		local sec_max = perf.win_sec_max
+		for k, v in pairs(perf.sections) do
+			if v > (sec_max[k] or 0) then
+				sec_max[k] = v
+			end
+		end
 		if heap > last_heap then
 			perf.win_alloc = perf.win_alloc + (heap - last_heap)
 		end
 		if perf.win_t >= 30 then
 			local n = perf.win_frames
-			log("perf: %d frames, avg %.1f ms (%.0f fps), worst %.0f ms, %d hitch(es); mod avg %.2f ms max %.1f ms; lua heap %.0f MB, allocating %.0f kB/s",
-				n, perf.win_ms / n, 1000 * n / perf.win_ms, perf.win_worst, perf.win_hitches,
-				perf.win_mod / n, perf.win_mod_max, heap / 1024, perf.win_alloc / perf.win_t)
+			log("perf: %d frames, avg %.1f ms (%.0f fps), worst %.0f ms, %d hitch(es), %d frames over 2x typical, %d over 16.7 ms; mod avg %.2f ms max %.1f ms [%s]; lua heap %.0f MB, allocating %.0f kB/s",
+				n, perf.win_ms / n, 1000 * n / perf.win_ms, perf.win_worst, perf.win_hitches, perf.win_slow, perf.win_over16,
+				perf.win_mod / n, perf.win_mod_max, max_sections(3), heap / 1024, perf.win_alloc / perf.win_t)
 			perf.win_t, perf.win_frames, perf.win_hitches, perf.win_mod, perf.win_mod_max = 0, 0, 0, 0, 0
-			perf.win_alloc, perf.win_worst, perf.win_ms = 0, 0, 0
+			perf.win_alloc, perf.win_worst, perf.win_ms, perf.win_slow, perf.win_over16 = 0, 0, 0, 0, 0
 		end
 	end
 	-- Reset per-frame totals (keep the keys, so no table churn).
@@ -1892,27 +2883,56 @@ local CARDINALS = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" }
 ---------------------------------------------------------------------------
 
 local scaled_infos = setmetatable({}, { __mode = "k" })
+local RANGE_KEYS = { "max_range", "min_range" }
+
+local function set_state_range(st, orig, on)
+	if orig then
+		st.range = on and orig * M.range_scale or orig
+	end
+end
+
+local function set_info_ranges(info, ranges, on)
+	for key, v in pairs(ranges) do
+		info[key] = on and v * M.range_scale or v
+	end
+end
 local scaled_states = setmetatable({}, { __mode = "k" })
 
 local function scale_range(context)
 	local st = type(context) == "table" and context.state
-	if not st or scaled_states[st] or not M.on() then
+	if not st or scaled_states[st] ~= nil or not M.on() then
 		return
 	end
-	scaled_states[st] = true
-	if type(st.range) == "number" then
-		st.range = st.range * M.range_scale
-	end
+	-- Remember the vanilla values (state: the range or false; settings: the
+	-- ranges it has), so the mod going off can put them back.
+	local orig = type(st.range) == "number" and st.range or false
+	scaled_states[st] = orig
+	set_state_range(st, orig, true)
 	local info = st.weapon_info
-	if type(info) == "table" and not scaled_infos[info] then
-		scaled_infos[info] = true
-		for _, key in ipairs({ "max_range", "min_range" }) do
+	if type(info) == "table" and scaled_infos[info] == nil then
+		local ranges = {}
+		for _, key in ipairs(RANGE_KEYS) do
 			if type(info[key]) == "number" then
-				info[key] = info[key] * M.range_scale
+				ranges[key] = info[key]
 			end
 		end
+		scaled_infos[info] = ranges
+		set_info_ranges(info, ranges, true)
 	end
 end
+
+-- Mod off (F8, or a vanilla player in the session): every range back to
+-- vanilla. On again: scaled again. Idempotent, since each write starts
+-- from the remembered vanilla value.
+local function apply_range_scaling(on)
+	for st, orig in pairs(scaled_states) do
+		set_state_range(st, orig, on)
+	end
+	for info, ranges in pairs(scaled_infos) do
+		set_info_ranges(info, ranges, on)
+	end
+end
+M.apply_range_scaling = apply_range_scaling
 
 local function hook_weapon_range(path, class_name)
 	on_require(path, function()
@@ -1939,7 +2959,7 @@ end
 local function scale_owned(masters)
 	for _, ctx in pairs(masters or {}) do
 		local st = type(ctx) == "table" and ctx.state
-		local owner = st and not scaled_states[st] and st.owner_unit
+		local owner = st and scaled_states[st] == nil and st.owner_unit
 		if owner and Unit.alive(owner) and EntityAux.has_component(owner, "character") then
 			scale_range(ctx)
 		end
@@ -1954,8 +2974,9 @@ local function hook_owned_weapon_range(path, class_name)
 		end
 		local original = cls.update_masters
 		mark_patched(cls, "range")
+		local label = "range " .. class_name
 		cls.update_masters = function(self, masters, ...)
-			try("range " .. class_name, scale_owned, masters)
+			try(label, scale_owned, masters)
 			return original(self, masters, ...)
 		end
 	end)
@@ -1969,13 +2990,22 @@ hook_owned_weapon_range("lua/components/flameweapon_component", "FlameweaponComp
 
 -- Is this HUD player entry the local player? Ownership lives on the
 -- player's game object (player_go:owned()), as the camera code checks it.
+-- Asked for every player several times a frame, so no closure here. Not
+-- remembered: the HUD's player objects answer "not owned" while a level
+-- loads and only become yours once it's up, so a cached answer goes stale.
+local function go_owned(go)
+	return go:owned()
+end
+
 local function is_owned(p)
 	if p.owned == true then
 		return true
 	end
-	local ok, owned = pcall(function()
-		return p.player_go and p.player_go:owned()
-	end)
+	local go = p.player_go
+	if not go then
+		return false
+	end
+	local ok, owned = pcall(go_owned, go)
 	return ok and owned == true
 end
 
@@ -1995,33 +3025,56 @@ local function has_ping(ping)
 	return ping and ping[1] and not (ping[1] == -1000 and (ping[2] == -1000 or ping[2] == -1003))
 end
 
--- Every player's map mark: { ping, owned, player_go, index }. Index is the
--- player's slot, which picks their colour (GameSettings.player_colors).
+-- Every player's map mark: { ping, owned, player_go, index, cleared }. Index
+-- is the player's slot, which picks their colour (GameSettings.player_colors).
+-- Collected once per frame into one reused list (the mark check and the
+-- compass both read it); a mark cleared this frame is flagged, not drawn.
+local pings_cache = { frame = -1, list = {} }
+
 local function all_pings(hud)
-	local list = {}
-	-- The bridge's player objects have no map_ping; reading it there crashes.
-	if M.scene ~= "mission" or M.on_bridge then
+	local frame = frame_number()
+	local list = pings_cache.list
+	if pings_cache.frame == frame then
 		return list
 	end
-	for i, p in ipairs(hud.players or {}) do
-		if type(p) == "table" and p.player_go and p.player_go:exists() then
-			local ping = p.player_go:get("map_ping")
-			if has_ping(ping) then
-				list[#list + 1] = { ping = ping, owned = is_owned(p), player_go = p.player_go, index = i }
+	pings_cache.frame = frame
+	local n = 0
+	-- The bridge's player objects have no map_ping; reading it there crashes.
+	if M.scene == "mission" and not M.on_bridge then
+		for i, p in ipairs(hud.players or {}) do
+			if type(p) == "table" and p.player_go and p.player_go:exists() then
+				local ping = p.player_go:get("map_ping")
+				if has_ping(ping) then
+					n = n + 1
+					local m = list[n] or {}
+					list[n] = m
+					m.ping, m.owned, m.player_go, m.index, m.cleared = ping, is_owned(p), p.player_go, i, false
+				end
 			end
 		end
+	end
+	for i = #list, n + 1, -1 do
+		list[i] = nil
 	end
 	return list
 end
 
+local function color_at(colors, index)
+	return colors[index]
+end
+
 local function player_color(index)
-	local ok, c = pcall(function()
-		return GameSettings.player_colors[index]
-	end)
+	local gs = rawget(_G, "GameSettings")
+	local ok, c = pcall(color_at, gs and gs.player_colors, index)
 	if ok and c then
 		return Color(255, c.y, c.z, c.w)
 	end
 	return Color(255, 255, 210, 60)
+end
+
+local function dead_state(unit)
+	local hs = EntityAux.state(unit, "character").health_state
+	return hs and hs.is_dead or false
 end
 
 -- Your own mark clears when you reach it or die. Each player's game clears
@@ -2033,13 +3086,12 @@ local function clear_own_marks(hud, level)
 	end
 	local dead = not Unit.alive(unit)
 	if not dead then
-		pcall(function()
-			local hs = EntityAux.state(unit, "character").health_state
-			dead = hs and hs.is_dead or false
-		end)
+		local ok, d = pcall(dead_state, unit)
+		dead = ok and d or false
 	end
+	M.local_dead = dead
 	for _, m in ipairs(all_pings(hud)) do
-		if m.owned then
+		if m.owned and not m.cleared then
 			-- A new mark (map or ping) starts unarmed: one placed close by
 			-- would otherwise count as reached the moment it's placed.
 			local own = M.own_mark
@@ -2057,10 +3109,176 @@ local function clear_own_marks(hud, level)
 			end
 			if dead or reached then
 				m.player_go:set("map_ping", NO_PING_MODDED)
+				m.cleared = true
 				log("map mark cleared (%s)", dead and "died" or "reached")
 			end
 		end
 	end
+end
+
+-- Compass drawing helpers. They read this frame's layout from `cb` (set by
+-- draw_compass) so they are plain functions, not closures made every frame.
+local cb = { raw = nil, font = nil, k = 1, cx = 0, cy = 0, inner = 0, span = 1, layer = 60, yaw = 0 }
+
+-- Distance labels ("123m") by metre count, made once each.
+local metre_labels = {}
+
+local function metres_label(d)
+	local n = math.floor(d + 0.5)
+	local s = metre_labels[n]
+	if not s then
+		s = n .. "m"
+		metre_labels[n] = s
+	end
+	return s
+end
+
+-- Text widths (the font measure is a per-label engine call) by pixel size
+-- and string; dropped if the HUD font changes.
+local width_cache, width_cache_font = {}, nil
+
+local function text_width(str, px)
+	if cb.font.font ~= width_cache_font then
+		width_cache, width_cache_font = {}, cb.font.font
+	end
+	local by_size = width_cache[px]
+	if not by_size then
+		by_size = {}
+		width_cache[px] = by_size
+	end
+	local width = by_size[str]
+	if not width then
+		width = #str * px * 0.55
+		local ok, lo, hi = pcall(Gui.text_extents, cb.raw, str, cb.font.font, px, cb.font.material)
+		if ok and lo and hi then
+			width = hi.x - lo.x
+		end
+		by_size[str] = width
+	end
+	return width
+end
+
+local function cb_rect(x, y, rw, rh, color, z)
+	Gui.rect(cb.raw, Vector3(x, y, z or cb.layer), Vector2(rw, rh), color)
+end
+
+-- Centred horizontally on x.
+local function cb_text(str, x, y, size, color, z)
+	local px = size * cb.k
+	local font = cb.font
+	Gui.text(cb.raw, str, font.font, px, font.material, Vector3(x - text_width(str, px) / 2, y, z or cb.layer + 2), color)
+end
+
+-- HD2-style circles and diamonds, built from thin horizontal strips
+-- (this GUI's triangles don't draw; rectangles do).
+local function cb_strips(x, y, r, color, z, diamond)
+	local rows = math.max(5, math.floor(r * 2 / math.max(1, cb.k)))
+	local h = r * 2 / rows
+	for i = 0, rows - 1 do
+		local dy = -r + (i + 0.5) * h
+		local hw
+		if diamond then
+			hw = (r - math.abs(dy)) * 0.75
+		else
+			hw = math.sqrt(math.max(0, r * r - dy * dy))
+		end
+		if hw > 0.3 then
+			Gui.rect(cb.raw, Vector3(x - hw, y + dy - h / 2, z or cb.layer + 3), Vector2(hw * 2, h + 0.6), color)
+		end
+	end
+end
+
+local function cb_circle(x, y, r, color, z)
+	cb_strips(x, y, r, color, z, false)
+end
+
+local function cb_diamond(x, y, r, color, z)
+	cb_strips(x, y, r, color, z, true)
+end
+
+-- Bar position of a bearing, or nil (and the offset) when off the bar.
+local function cb_x_for(angle)
+	-- Bearings increase counter-clockwise, so "left" is a positive offset.
+	local rel = wrap_angle(angle - cb.yaw)
+	if math.abs(rel) > cb.span then
+		return nil, rel
+	end
+	return cb.cx - rel / cb.span * cb.inner, rel
+end
+
+-- Spotted enemies for the compass: every living enemy entity (the entity
+-- manager keeps hosts' masters and clients' slaves apart) close enough and,
+-- with compass_enemy_los, with nothing static between your head and its
+-- chest. Positions are boxed into one reused list.
+M.enemies, M.enemy_count = {}, 0
+local MAX_SPOTTED = 32
+
+local function enemy_unit_of(key, ctx)
+	if is_engine_object(key) then
+		return key
+	end
+	return type(ctx) == "table" and is_engine_object(ctx.unit) and ctx.unit or nil
+end
+
+local function enemy_is_dead(unit)
+	local ok, hs = pcall(EntityAux.state, unit, "health")
+	return ok and type(hs) == "table" and hs.is_dead == true
+end
+
+local function scan_enemy_table(t, here, eye, physics, range_sq, n)
+	if type(t) ~= "table" then
+		return n
+	end
+	for key, ctx in pairs(t) do
+		if n >= MAX_SPOTTED then
+			return n
+		end
+		local unit = enemy_unit_of(key, ctx)
+		if unit and Unit.alive(unit) and not enemy_is_dead(unit) then
+			local pos = Unit.world_position(unit, 0)
+			if Vector3.distance_squared(pos, here) <= range_sq then
+				local seen = true
+				if M.compass_enemy_los then
+					local chest = pos + Vector3(0, 0, 1)
+					local dir = chest - eye
+					local dist = Vector3.length(dir)
+					if dist > 0.5 then
+						local hit = PhysicsWorld.immediate_raycast(physics, eye, dir * (1 / dist), dist - 0.3,
+							"closest", "types", "statics", "collision_filter", "default")
+						seen = not hit
+					end
+				end
+				if seen then
+					n = n + 1
+					local e = M.enemies[n] or {}
+					M.enemies[n] = e
+					e.pos = Vector3Aux.box(e.pos or {}, pos)
+				end
+			end
+		end
+	end
+	return n
+end
+
+local function update_spotted_enemies(hud, here)
+	local em = hud.entity_manager
+	local n = 0
+	if em and M.local_unit and Unit.alive(M.local_unit) then
+		local eye = here + Vector3(0, 0, 1.5)
+		local physics = World.physics_world(camera_world(CameraManager))
+		local range_sq = M.compass_enemy_range * M.compass_enemy_range
+		local ok, masters = pcall(em.get_master_entities, em, "enemy")
+		local ok2, slaves = pcall(em.get_slave_entities, em, "enemy")
+		n = scan_enemy_table(ok and masters, here, eye, physics, range_sq, n)
+		n = scan_enemy_table(ok2 and slaves, here, eye, physics, range_sq, n)
+		if not M.enemies_logged and (masters or slaves) then
+			M.enemies_logged = true
+			local t = masters or slaves
+			local k, v = next(t)
+			log("compass enemies: entity table keyed by %s, values %s", type(k), type(v))
+		end
+	end
+	M.enemy_count = n
 end
 
 -- Drawn straight onto the HUD's screen GUI in pixels (not through hd_gui,
@@ -2077,67 +3295,21 @@ local function draw_compass(hud)
 	local cx, cy = w / 2, h - M.compass_top * k
 	local half_w, bar_h = M.compass_width / 2 * k, 20 * k
 	local inner = half_w - 18 * k -- marks stay this far inside the bar's ends
-	local span = math.rad(M.compass_span) / 2
 	local layer = 60
+	cb.raw, cb.font, cb.k, cb.cx, cb.cy, cb.inner, cb.layer, cb.yaw = raw, font, k, cx, cy, inner, layer, M.yaw
+	cb.span = math.rad(M.compass_span) / 2
 
-	local function rect(x, y, rw, rh, color, z)
-		Gui.rect(raw, Vector3(x, y, z or layer), Vector2(rw, rh), color)
-	end
-	local function text(str, x, y, size, color, z)
-		-- Centre horizontally on x.
-		local px = size * k
-		local width = #str * px * 0.55
-		local ok, lo, hi = pcall(Gui.text_extents, raw, str, font.font, px, font.material)
-		if ok and lo and hi then
-			width = hi.x - lo.x
-		end
-		Gui.text(raw, str, font.font, px, font.material, Vector3(x - width / 2, y, z or layer + 2), color)
-	end
-
-	-- HD2-style circles and diamonds, built from thin horizontal strips
-	-- (this GUI's triangles don't draw; rectangles do).
-	local function strips(x, y, r, color, z, half_width)
-		local rows = math.max(5, math.floor(r * 2 / math.max(1, k)))
-		local h = r * 2 / rows
-		for i = 0, rows - 1 do
-			local dy = -r + (i + 0.5) * h
-			local hw = half_width(dy)
-			if hw > 0.3 then
-				Gui.rect(raw, Vector3(x - hw, y + dy - h / 2, z or layer + 3), Vector2(hw * 2, h + 0.6), color)
-			end
-		end
-	end
-	local function circle(x, y, r, color, z)
-		strips(x, y, r, color, z, function(dy)
-			return math.sqrt(math.max(0, r * r - dy * dy))
-		end)
-	end
-	local function diamond(x, y, r, color, z)
-		strips(x, y, r, color, z, function(dy)
-			return (r - math.abs(dy)) * 0.75
-		end)
-	end
-
-	local function x_for(angle)
-		-- Bearings increase counter-clockwise, so "left" is a positive offset.
-		local rel = wrap_angle(angle - M.yaw)
-		if math.abs(rel) > span then
-			return nil, rel
-		end
-		return cx - rel / span * inner, rel
-	end
-
-	rect(cx - half_w, cy, half_w * 2, bar_h, Color(110, 0, 0, 0))
-	rect(cx - k, cy - 4 * k, 2 * k, bar_h + 8 * k, Color(220, 255, 220, 120), layer + 1) -- heading
+	cb_rect(cx - half_w, cy, half_w * 2, bar_h, Color(110, 0, 0, 0))
+	cb_rect(cx - k, cy - 4 * k, 2 * k, bar_h + 8 * k, Color(220, 255, 220, 120), layer + 1) -- heading
 
 	local north_bearing = north()
 	for i = 0, 23 do
-		local x = x_for(north_bearing + i * math.rad(15))
+		local x = cb_x_for(north_bearing + i * math.rad(15))
 		if x then
 			if i % 3 == 0 then
-				text(CARDINALS[i / 3 + 1], x, cy + 5 * k, 13, Color(230, 255, 255, 255))
+				cb_text(CARDINALS[i / 3 + 1], x, cy + 5 * k, 13, Color(230, 255, 255, 255))
 			else
-				rect(x - k, cy + 2 * k, 2 * k, 6 * k, Color(160, 255, 255, 255), layer + 1)
+				cb_rect(x - k, cy + 2 * k, 2 * k, 6 * k, Color(160, 255, 255, 255), layer + 1)
 			end
 		end
 	end
@@ -2148,23 +3320,22 @@ local function draw_compass(hud)
 	end
 	local here = Unit.world_position(M.local_unit, 0)
 
-	-- Enemy patrols the radar has picked up (the map's red icons): patrols
-	-- within the ping radius of the squad. Refreshed once a second.
-	if M.compass_enemies and hud.patrol_manager then
-		if M.clock - (M.patrols_at or -10) > 1 then
-			M.patrols_at = M.clock
-			local ok, list = pcall(hud.patrol_manager.get_patrol_hud_info, hud.patrol_manager)
-			M.patrols = ok and list or nil
+	-- Enemies you can see (HD2 shows spotted ones): living enemy units within
+	-- compass_enemy_range with a clear line from you, refreshed twice a second.
+	if M.compass_enemies and hud.entity_manager then
+		if M.clock - (M.enemies_at or -10) > 0.5 then
+			M.enemies_at = M.clock
+			try("spotted enemies", update_spotted_enemies, hud, here)
 		end
 		local red = Color(230, 235, 60, 50)
-		for _, info in ipairs(M.patrols or {}) do
-			local ok, pos = pcall(Vector3Aux.unbox, info.position)
-			if ok and pos then
-				local x = x_for(bearing(flat(pos - here)))
-				if x then
-					local radius = math.min(5, 2.5 + 0.5 * (info.amount or 1)) * k
-					circle(x, cy + bar_h / 2, radius, red, layer + 2)
-				end
+		local list = M.enemies
+		for i = 1, M.enemy_count or 0 do
+			local e = list[i]
+			local d = flat(Vector3Aux.unbox(e.pos) - here)
+			local x = cb_x_for(bearing(d))
+			if x then
+				local radius = math.max(2, 4.5 - Vector3.length(d) / 15) * k
+				cb_circle(x, cy + bar_h / 2, radius, red, layer + 2)
 			end
 		end
 	end
@@ -2174,7 +3345,8 @@ local function draw_compass(hud)
 	if M.compass_objectives and hud.mission_manager then
 		if M.clock - (M.objectives_at or -10) > 1 then
 			M.objectives_at = M.clock
-			local list = {}
+			-- Entries (and their boxed positions) are reused across refreshes.
+			local list, n = M.objectives or {}, 0
 			pcall(function()
 				for _, obj in ipairs(hud.mission_manager:get_objectives() or {}) do
 					local state = tostring(obj.state)
@@ -2196,20 +3368,27 @@ local function draw_compass(hud)
 								log("objective icon seen: %s", icon)
 							end
 							local extract = string.find(icon, "extract") ~= nil or string.find(icon, "shuttle") ~= nil
-							list[#list + 1] = { pos = Vector3Aux.box({}, pos), extract = extract }
+							n = n + 1
+							local e = list[n] or {}
+							list[n] = e
+							e.pos = Vector3Aux.box(e.pos or {}, pos)
+							e.extract = extract
 						end
 					end
 				end
 			end)
+			for i = #list, n + 1, -1 do
+				list[i] = nil
+			end
 			M.objectives = list
 		end
 		for _, o in ipairs(M.objectives or {}) do
 			local d = flat(Vector3Aux.unbox(o.pos) - here)
-			local x = x_for(bearing(d))
+			local x = cb_x_for(bearing(d))
 			if x then
 				local c = o.extract and Color(255, 80, 220, 110) or Color(255, 255, 210, 60)
-				diamond(x, cy + bar_h + 1 * k, 5 * k, c, layer + 3)
-				text(string.format("%dm", math.floor(Vector3.length(d) + 0.5)), x, cy + bar_h + 8 * k, 11, c, layer + 3)
+				cb_diamond(x, cy + bar_h + 1 * k, 5 * k, c, layer + 3)
+				cb_text(metres_label(Vector3.length(d)), x, cy + bar_h + 8 * k, 11, c, layer + 3)
 			end
 		end
 	end
@@ -2220,9 +3399,9 @@ local function draw_compass(hud)
 			if type(p) == "table" and not is_owned(p) and p.player_go and p.player_go:exists() then
 				local ok, u = pcall(p.player_go.get, p.player_go, "avatar_unit")
 				if ok and u and Unit.alive(u) then
-					local x = x_for(bearing(flat(Unit.world_position(u, 0) - here)))
+					local x = cb_x_for(bearing(flat(Unit.world_position(u, 0) - here)))
 					if x then
-						circle(x, cy + bar_h + 2 * k, 3 * k, player_color(i), layer + 3)
+						cb_circle(x, cy + bar_h + 2 * k, 3 * k, player_color(i), layer + 3)
 					end
 				end
 			end
@@ -2230,17 +3409,19 @@ local function draw_compass(hud)
 	end
 
 	for _, m in ipairs(all_pings(hud)) do
-		local d = flat(ping_to_world(level, m.ping) - here)
-		local x, rel = x_for(bearing(d))
-		local color = player_color(m.index)
-		if x then
-			diamond(x, cy + bar_h / 2, 7 * k, color, layer + 3)
-		else
-			-- Off the bar: pin to the nearer end with an arrow.
-			x = rel > 0 and (cx - inner) or (cx + inner)
-			text(rel > 0 and "<" or ">", x, cy + 4 * k, 15, color, layer + 3)
+		if not m.cleared then
+			local d = flat(ping_to_world(level, m.ping) - here)
+			local x, rel = cb_x_for(bearing(d))
+			local color = player_color(m.index)
+			if x then
+				cb_diamond(x, cy + bar_h / 2, 7 * k, color, layer + 3)
+			else
+				-- Off the bar: pin to the nearer end with an arrow.
+				x = rel > 0 and (cx - inner) or (cx + inner)
+				cb_text(rel > 0 and "<" or ">", x, cy + 4 * k, 15, color, layer + 3)
+			end
+			cb_text(metres_label(Vector3.length(d)), x, cy - 16 * k, 12, color, layer + 3)
 		end
-		text(string.format("%dm", math.floor(Vector3.length(d) + 0.5)), x, cy - 16 * k, 12, color, layer + 3)
 	end
 end
 
@@ -2359,6 +3540,8 @@ local function handle_ping(hud)
 			p.player_go:set("map_ping", world_to_ping(level, target))
 			log("pinged (%.0f, %.0f), %.0f m away", target.x, target.y,
 				Vector3.length(flat(target - Unit.world_position(M.local_unit, 0))))
+			-- The input hook turns this into the game's "move" callout.
+			M.callout_pending = M.ping_callout == true
 		end
 	end
 end
@@ -2398,6 +3581,827 @@ local function count_new_hits(st)
 	return new
 end
 
+-- Corners of the hit marker, relative to the crosshair.
+local HIT_TICKS = { { -1, -1 }, { 1, -1 }, { -1, 1 }, { 1, 1 } }
+
+-- "rounds | magazines" labels, made once per combination.
+local ammo_labels = {}
+
+local function ammo_label(rounds, mags)
+	local by_mags = ammo_labels[rounds]
+	if not by_mags then
+		by_mags = {}
+		ammo_labels[rounds] = by_mags
+	end
+	local key = mags or false
+	local s = by_mags[key]
+	if not s then
+		s = mags and (rounds .. " | " .. mags) or tostring(rounds)
+		by_mags[key] = s
+	end
+	return s
+end
+
+local function reticle_text(raw, font, k, str, x, y, size, color)
+	Gui.text(raw, str, font.font, size * k, font.material, Vector3(x, y, 70), color)
+end
+
+local function hud_text(raw, font, k, str, x, y, size, color, layer)
+	Gui.text(raw, str, font.font, size * k, font.material, Vector3(x, y, layer), color)
+end
+
+---------------------------------------------------------------------------
+-- HD2-style HUD pieces: spread reticle, weapon panel, damage arc, throw arc.
+-- (Scoped in a block: a Lua chunk may hold at most 200 locals.)
+---------------------------------------------------------------------------
+
+local hud2 = {}
+do
+
+-- How far open the reticle is, 0..1, from the firearm's live spread. Spread
+-- is in the weapon's own units; size it between the weapon's min and max,
+-- or against the widest this weapon has shown when it has no range.
+local spread_widest = setmetatable({}, { __mode = "k" })
+
+local function spread_openness(st)
+	local spread = type(st.spread) == "number" and st.spread or 0
+	spread = spread * (M.aiming_now and M.aim_spread_scale or M.hip_spread_scale)
+	local lo = type(st.spread_min) == "number" and st.spread_min * M.hip_spread_scale or 0
+	local hi = type(st.spread_max) == "number" and st.spread_max * M.hip_spread_scale or 0
+	if hi > lo then
+		return math.max(0, math.min(1, (spread - lo) / (hi - lo)))
+	end
+	local widest = math.max(spread_widest[st] or 0.0001, spread)
+	spread_widest[st] = widest
+	return spread / widest
+end
+
+-- "weapon_assault_rifle" -> "ASSAULT RIFLE", made once per name.
+local display_names = {}
+
+local function display_name(name, prefix)
+	local s = display_names[name]
+	if not s then
+		s = name
+		if prefix and string.sub(s, 1, #prefix) == prefix then
+			s = string.sub(s, #prefix + 1)
+		end
+		s = string.upper((string.gsub(s, "_", " ")))
+		display_names[name] = s
+	end
+	return s
+end
+
+local capacity_labels = {}
+
+local function capacity_label(n)
+	local s = capacity_labels[n]
+	if not s then
+		s = "/ " .. n
+		capacity_labels[n] = s
+	end
+	return s
+end
+
+-- Bottom right: weapon name, rounds / capacity, magazines as pips, fire mode.
+local function draw_weapon_panel(raw, font, k, w, h, st)
+	if not (M.weapon_panel and st and type(st.rounds) == "number") then
+		return
+	end
+	local layer = 68
+	local x, y = w - 236 * k, h - 100 * k
+	Gui.rect(raw, Vector3(x, y, layer - 1), Vector2(216 * k, 76 * k), Color(120, 0, 0, 0))
+	local info = st.weapon_info or st
+	local name = type(info.name) == "string" and info.name or (type(st.name) == "string" and st.name) or nil
+	if name then
+		hud_text(raw, font, k, display_name(name, "weapon_"), x + 12 * k, y + 6 * k, 11, Color(200, 255, 255, 255), layer)
+	end
+	local low = st.rounds <= (info.low_ammo_warning or 0)
+	local c = low and Color(255, 255, 80, 60) or Color(240, 255, 255, 255)
+	if st.is_reloading then
+		hud_text(raw, font, k, "RELOADING", x + 12 * k, y + 24 * k, 20, Color(255, 255, 210, 60), layer)
+	else
+		hud_text(raw, font, k, ammo_label(st.rounds, nil), x + 12 * k, y + 20 * k, 30, c, layer)
+		if type(st.magazine_capacity) == "number" then
+			hud_text(raw, font, k, capacity_label(st.magazine_capacity), x + 74 * k, y + 36 * k, 12, Color(170, 255, 255, 255), layer)
+		end
+	end
+	local mode = "SEMI"
+	if type(st.burst_rounds) == "number" and st.burst_rounds > 1 then
+		mode = "BURST"
+	elseif st.fully_automatic then
+		mode = "AUTO"
+	end
+	hud_text(raw, font, k, mode, x + 168 * k, y + 8 * k, 11, Color(200, 255, 255, 255), layer)
+	-- Magazines: one pip each, dim for the ones used.
+	local mags, max_mags = st.magazines, st.magazines_max
+	if type(mags) == "number" and type(max_mags) == "number" then
+		local n = math.min(max_mags, 14)
+		for i = 1, n do
+			local full = i <= mags
+			Gui.rect(raw, Vector3(x + 12 * k + (i - 1) * 14 * k, y + 56 * k, layer), Vector2(10 * k, 13 * k),
+				full and Color(230, 255, 255, 255) or Color(70, 255, 255, 255))
+		end
+		if max_mags > n then
+			hud_text(raw, font, k, ammo_label(mags, nil), x + 12 * k + n * 14 * k + 4 * k, y + 55 * k, 11, Color(200, 255, 255, 255), layer)
+		end
+	end
+end
+
+-- Red edges when you take damage: three nested frames fading inward.
+local function draw_hit_vignette(raw, k, w, h)
+	if not (M.hit_vignette and M.hit_taken_at) then
+		return
+	end
+	local age = M.clock - M.hit_taken_at
+	if age < 0 or age > 0.45 then
+		return
+	end
+	local strength = 1 - age / 0.45
+	for band = 1, 3 do
+		local width = (70 - band * 18) * k
+		local c = Color(math.floor(60 * strength), 255, 20, 10)
+		Gui.rect(raw, Vector3(0, 0, 64), Vector2(w, width), c)
+		Gui.rect(raw, Vector3(0, h - width, 64), Vector2(w, width), c)
+		Gui.rect(raw, Vector3(0, 0, 64), Vector2(width, h), c)
+		Gui.rect(raw, Vector3(w - width, 0, 64), Vector2(width, h), c)
+	end
+end
+
+-- Red arc around the reticle toward whatever hit you last, fading out.
+local function draw_damage_arc(raw, k, cx, cy, layer)
+	if not (M.damage_arcs and M.hit_from and M.hit_from_at and M.local_unit and Unit.alive(M.local_unit)) then
+		return
+	end
+	local age = M.clock - M.hit_from_at
+	if age > 0.7 or age < 0 then
+		return
+	end
+	local d = flat(Vector3Aux.unbox(M.hit_from) - Unit.world_position(M.local_unit, 0))
+	if Vector3.length(d) < 0.1 or not M.yaw then
+		return
+	end
+	-- Angle of the attacker relative to the view: 0 = ahead, positive = left.
+	local rel = wrap_angle(bearing(d) - M.yaw)
+	local radius, half, n = 58 * k, math.rad(22), 9
+	local c = Color(math.floor(230 * (1 - age / 0.7)), 255, 50, 40)
+	for i = 0, n - 1 do
+		local a = rel - half + (i + 0.5) / n * 2 * half
+		local px, py = cx - math.sin(a) * radius, cy - math.cos(a) * radius
+		Gui.rect(raw, Vector3(px - 2.5 * k, py - 2.5 * k, layer), Vector2(5 * k, 5 * k), c)
+	end
+end
+
+-- A GUI in the world, for the throw arc. Belongs to the current world:
+-- forgotten on a scene change (reset_scene).
+local function world_gui()
+	if not M.world_gui then
+		M.world_gui = World.create_world_gui(camera_world(CameraManager), Matrix4x4.identity(), 1, 1, "immediate")
+	end
+	return M.world_gui
+end
+
+local function world_dot(gui, rot, p, size, color)
+	local corner = p - Quaternion.right(rot) * (size / 2) - Quaternion.up(rot) * (size / 2)
+	Gui.rect_3d(gui, Matrix4x4.from_quaternion_position(rot, corner), Vector3(0, 0, 0), 1, Vector2(size, size), color)
+end
+
+-- Dotted arc from the hand to the crosshair point while holding a throw,
+-- with a ring where it lands. The arc is a drawing, not the physics: it
+-- shows where, not exactly how high.
+local function draw_throw_arc()
+	if not (M.throw_arc and M.throwing and M.aim_point and M.local_unit and Unit.alive(M.local_unit)) then
+		return
+	end
+	local target = Vector3Aux.unbox(M.aim_point)
+	local hand = Unit.world_position(M.local_unit, 0) + Vector3(0, 0, 1.4)
+	local flat_d = Vector3.length(flat(target - hand))
+	local apex = math.max(1, math.min(6, flat_d * 0.25))
+	local gui = world_gui()
+	local rot = CameraManager:get_rotation()
+	local size = 0.1 + flat_d * 0.004
+	local c = Color(200, 255, 255, 255)
+	local n = 14
+	for i = 2, n - 1 do
+		local t = i / n
+		local p = hand + (target - hand) * t + Vector3(0, 0, apex * 4 * t * (1 - t))
+		world_dot(gui, rot, p, size, c)
+	end
+	for i = 0, 11 do
+		local a = i / 12 * 2 * math.pi
+		world_dot(gui, rot, target + Vector3(math.cos(a) * 0.6, math.sin(a) * 0.6, 0.08), size * 0.8, Color(220, 255, 210, 60))
+	end
+end
+
+---------------------------------------------------------------------------
+-- Stratagem panel (HD2 style): the loadout's stratagems with their arrow
+-- codes down the left while the stratagem input is held, the arrows you've
+-- entered lit, codes that no longer match dimmed. The list and the entered
+-- queue live in game tables found once at runtime (logged).
+---------------------------------------------------------------------------
+
+local STATE_NAMES = { "character", "stratagem", "input", "inventory", "stratagems" }
+local EMPTY = {}
+
+local function find_stratagem_tables(hud, p, i)
+	local info = hud.hud_info and hud.hud_info[i]
+	local list_src, queue_src, list_name, queue_name
+	if type(info) == "table" and type(info.stratagems) == "table" then
+		list_src, list_name = info, "hud_info"
+	elseif type(p.stratagems) == "table" then
+		list_src, list_name = p, "player"
+	end
+	if type(info) == "table" and type(info.stratagems_queue) == "table" then
+		queue_src, queue_name = info, "hud_info"
+	elseif type(p.stratagems_queue) == "table" then
+		queue_src, queue_name = p, "player"
+	end
+	local unit = M.local_unit
+	if unit then
+		for _, name in ipairs(STATE_NAMES) do
+			local ok, st = pcall(EntityAux.state, unit, name)
+			if ok and type(st) == "table" then
+				if not list_src and type(st.stratagems) == "table" then
+					list_src, list_name = st, name .. " state"
+				end
+				if not queue_src and type(st.stratagems_queue) == "table" then
+					queue_src, queue_name = st, name .. " state"
+				end
+			end
+		end
+	end
+	return list_src, queue_src, list_name, queue_name
+end
+
+-- Which HUD player entry is yours.
+local function local_player_entry(hud)
+	for i, p in ipairs(hud.players or {}) do
+		if type(p) == "table" and is_owned(p) then
+			return i, p
+		end
+	end
+end
+
+-- Small solid arrow: r is half its size.
+local function draw_arrow(raw, k, x, y, r, dir, color, layer)
+	local rows = math.max(4, math.floor(r * 2 / math.max(1, k)))
+	local h = r * 2 / rows
+	for i = 0, rows - 1 do
+		local dy = -r + (i + 0.5) * h
+		local x0, width
+		if dir == "up" then
+			local hw = (dy + r) / 2
+			x0, width = x - hw, 2 * hw
+		elseif dir == "down" then
+			local hw = (r - dy) / 2
+			x0, width = x - hw, 2 * hw
+		elseif dir == "left" then
+			x0, width = x - r + math.abs(dy), 2 * r - math.abs(dy)
+		else
+			x0, width = x - r, 2 * r - math.abs(dy)
+		end
+		if width > 0.3 then
+			Gui.rect(raw, Vector3(x0, y + dy - h / 2, layer), Vector2(width, h + 0.6), color)
+		end
+	end
+end
+
+local seconds_labels = {}
+
+local function seconds_label(n)
+	local s = seconds_labels[n]
+	if not s then
+		s = n .. "s"
+		seconds_labels[n] = s
+	end
+	return s
+end
+
+local function draw_stratagem_panel(hud, raw, font, k, w, h)
+	if not M.stratagem_panel then
+		return
+	end
+	local i, p = local_player_entry(hud)
+	local info = i and hud.hud_info and hud.hud_info[i]
+	if not (info and info.state == "stratagems") then
+		return
+	end
+	-- Find (and re-find after a scene change) the game's tables, once a second.
+	if not (M.strat_list_src and M.strat_queue_src) and M.clock - (M.strat_probe_at or -10) > 1 then
+		M.strat_probe_at = M.clock
+		local list_src, queue_src, ln, qn = find_stratagem_tables(hud, p, i)
+		M.strat_list_src, M.strat_queue_src = list_src, queue_src
+		if list_src and queue_src then
+			log("stratagem panel: list in %s, entered arrows in %s", ln, qn)
+		elseif not M.strat_probe_logged then
+			M.strat_probe_logged = true
+			log("stratagem panel: list %s, entered arrows %s", ln or "not found", qn or "not found")
+		end
+	end
+	local list = M.strat_list_src and M.strat_list_src.stratagems
+	if type(list) ~= "table" then
+		return
+	end
+	local queue = M.strat_queue_src and M.strat_queue_src.stratagems_queue or EMPTY
+	local entered = #queue
+	if entered > 0 and not M.strat_queue_logged then
+		M.strat_queue_logged = true
+		log("stratagem panel: entered arrow looks like %s", tostring(queue[1]))
+	end
+	local layer = 68
+	local rows = 0
+	for _, s in ipairs(list) do
+		if type(s) == "table" then
+			rows = rows + 1
+		end
+	end
+	local x, y = 22 * k, h / 2 - rows * 15 * k
+	local base_x = x + 10 * k
+	Gui.rect(raw, Vector3(x, y - 6 * k, layer - 1), Vector2(200 * k, rows * 30 * k + 12 * k), Color(110, 0, 0, 0))
+	for _, s in ipairs(list) do
+		if type(s) == "table" then
+			local li = type(s.loadout_info) == "table" and s.loadout_info or EMPTY
+			local combo = type(li.combo) == "table" and li.combo or EMPTY
+			local matches = true
+			for j = 1, entered do
+				if combo[j] ~= queue[j] then
+					matches = false
+					break
+				end
+			end
+			local uses = s.uses_left
+			local cooldown = type(s.cooldown_timer) == "number" and s.cooldown_timer or 0
+			local available = (uses == nil or uses > 0) and not s.blocked and cooldown <= 0
+			local dim = not matches or not available
+			local base = dim and Color(110, 200, 200, 200) or Color(230, 255, 255, 255)
+			if type(li.name) == "string" then
+				hud_text(raw, font, k, display_name(li.name, "stratagem_"), base_x, y, 11, base, layer)
+			end
+			for j, dir in ipairs(combo) do
+				local lit = matches and j <= entered
+				draw_arrow(raw, k, base_x + 5 * k + (j - 1) * 14 * k, y + 20 * k, 5 * k, dir,
+					lit and Color(255, 255, 220, 60) or base, layer)
+			end
+			if cooldown > 0 then
+				hud_text(raw, font, k, seconds_label(math.ceil(cooldown)), x + 160 * k, y + 14 * k, 11, Color(200, 255, 120, 80), layer)
+			elseif type(uses) == "number" then
+				hud_text(raw, font, k, ammo_label(uses, nil), x + 170 * k, y + 14 * k, 11, base, layer)
+			end
+			y = y + 30 * k
+		end
+	end
+end
+
+---------------------------------------------------------------------------
+-- Death cam and pad aim assist.
+---------------------------------------------------------------------------
+
+-- Living teammates' avatar units, nearest first, refreshed each HUD frame
+-- into one reused list.
+M.teammates = {}
+
+local function nearer_to_sort_here(a, b)
+	local here = Vector3Aux.unbox(M.sort_here)
+	return Vector3.distance_squared(Unit.world_position(a, 0), here)
+		< Vector3.distance_squared(Unit.world_position(b, 0), here)
+end
+
+local function update_teammates(hud)
+	local list = M.teammates
+	local n = 0
+	local here = M.local_unit and Unit.alive(M.local_unit) and Unit.world_position(M.local_unit, 0)
+	for _, p in ipairs(hud.players or {}) do
+		if type(p) == "table" and not is_owned(p) and p.player_go and p.player_go:exists() then
+			local ok, u = pcall(p.player_go.get, p.player_go, "avatar_unit")
+			if ok and u and Unit.alive(u) then
+				n = n + 1
+				list[n] = u
+			end
+		end
+	end
+	for j = #list, n + 1, -1 do
+		list[j] = nil
+	end
+	if here and n > 1 then
+		M.sort_here = Vector3Aux.box(M.sort_here or {}, here)
+		table.sort(list, nearer_to_sort_here)
+	end
+end
+
+-- Overlap callback: any living enemy near the crosshair point.
+local function assist_callback(actors)
+	for _, actor in ipairs(actors or {}) do
+		local ok, unit = pcall(Actor.unit, actor)
+		if ok and unit and Unit.alive(unit) then
+			local ok2, enemy = pcall(EntityAux.has_component, unit, "enemy")
+			if ok2 and enemy then
+				local ok3, hs = pcall(EntityAux.state, unit, "health")
+				if not (ok3 and type(hs) == "table" and hs.is_dead) then
+					M.assist_at = M.clock
+					return
+				end
+			end
+		end
+	end
+end
+
+-- Asked every frame on a pad; the physics answers on the next step.
+local function update_aim_assist()
+	if not (M.pad_aim_assist and M.player_pad and camera_active() and not M.on_bridge and M.local_unit) then
+		return
+	end
+	local target = crosshair_point()
+	PhysicsWorld.overlap(World.physics_world(camera_world(CameraManager)), assist_callback,
+		"shape", "sphere", "position", target, "size", M.aim_assist_radius, "collision_filter", "damage_query")
+end
+M.update_aim_assist = update_aim_assist
+
+hud2.spread_openness = spread_openness
+hud2.draw_weapon_panel = draw_weapon_panel
+hud2.draw_damage_arc = draw_damage_arc
+hud2.draw_hit_vignette = draw_hit_vignette
+hud2.draw_throw_arc = draw_throw_arc
+hud2.draw_stratagem_panel = draw_stratagem_panel
+hud2.update_teammates = update_teammates
+end -- hud2
+
+-- (A second scoped block: the one above already holds as many locals as
+-- the chunk allows while it is open.)
+do
+
+---------------------------------------------------------------------------
+-- Ambient dressing. Once the objectives are known, drop a few pieces of
+-- abandoned gear around each (random ring, settled onto the ground by a
+-- downward ray) and one crashed shuttle between two of them. Plain units:
+-- no game object, so nothing to sync and nothing for the game to track;
+-- the world takes them with it on a scene change.
+---------------------------------------------------------------------------
+
+M.props = {}
+
+local function ground_at(physics, x, y, z)
+	local hit, pos = PhysicsWorld.immediate_raycast(physics, Vector3(x, y, z + 30), Vector3(0, 0, -1), 80,
+		"closest", "types", "statics", "collision_filter", "default")
+	return hit and pos or nil
+end
+
+local function spawn_prop(world, physics, name, x, y, z)
+	local pos = ground_at(physics, x, y, z)
+	if not pos then
+		return false
+	end
+	local rot = Quaternion(Vector3.up(), math.random() * 2 * math.pi)
+	log("ambient props: spawning unit %s", name)
+	local unit = World.spawn_unit(world, name, pos, rot)
+	M.props[#M.props + 1] = unit
+	return true
+end
+
+local function spawn_fire(world, physics, effect, x, y, z)
+	local pos = ground_at(physics, x, y, z)
+	if not pos then
+		return false
+	end
+	M.props[#M.props + 1] = World.create_particles(world, effect, pos)
+	return true
+end
+
+local function dress_level()
+	if not (M.ambient_props and M.on() and M.scene == "mission" and not M.dressed) then
+		return
+	end
+	local objectives = M.objectives
+	if type(objectives) ~= "table" or #objectives < 1 then
+		return
+	end
+	M.dressed = true
+	local world = camera_world(CameraManager)
+	local physics = World.physics_world(world)
+	local units, effects = M.prop_units or {}, M.prop_effects or {}
+	local placed, count = 0, math.min(#objectives, 4)
+	for i = 1, count do
+		local centre = Vector3Aux.unbox(objectives[i].pos)
+		for _ = 1, M.props_per_objective or 0 do
+			local a, r = math.random() * 2 * math.pi, 7 + math.random() * 6
+			local x, y = centre.x + math.cos(a) * r, centre.y + math.sin(a) * r
+			if #effects > 0 and spawn_fire(world, physics, effects[math.random(#effects)], x, y, centre.z) then
+				placed = placed + 1
+			end
+			if #units > 0 and spawn_prop(world, physics, units[math.random(#units)], x + 2, y + 2, centre.z) then
+				placed = placed + 1
+			end
+		end
+	end
+	if M.prop_wreck and count >= 2 then
+		local a, b = Vector3Aux.unbox(objectives[1].pos), Vector3Aux.unbox(objectives[2].pos)
+		local mid = (a + b) * 0.5
+		local side = Vector3.normalize(Vector3(-(b.y - a.y), b.x - a.x, 0)) * 25
+		if spawn_prop(world, physics, M.prop_wreck, mid.x + side.x, mid.y + side.y, mid.z) then
+			placed = placed + 1
+		end
+	end
+	log("ambient props: %d placed around %d objective(s)", placed, count)
+end
+hud2.dress_level = dress_level
+
+---------------------------------------------------------------------------
+-- In-game settings menu. A list of the mod's switches and numbers, drawn
+-- on the HUD, moved through with the arrow keys or the D-pad, changed with
+-- left / right, saved to hd2cam.cfg next to the log (and loaded at boot).
+-- Each entry names the setting it edits and, where a change has to be
+-- pushed somewhere, how.
+---------------------------------------------------------------------------
+
+local SKY_CHOICES = { "overlay", "engine", "off" }
+local WEATHER_CHOICES = { "auto", "off", "desert", "forest", "snow", "city" }
+
+local function refog()
+	M.fog_default = M.fog_scale
+	M.fog_applied = false
+end
+
+local function regrade()
+	M.fog_graded = false
+end
+
+local function rerender()
+	M.render_applied = false -- the view-distance update re-applies next frame
+	M.dof_amount_set = nil
+end
+
+local function reweather()
+	if CameraManager then
+		update_weather(CameraManager, false)
+	end
+	M.weather_key = nil
+end
+
+local function remap(v)
+	if M.set_pad_remap then
+		M.set_pad_remap(v)
+	end
+end
+
+local function rerange()
+	if M.apply_range_scaling then
+		M.apply_range_scaling(M.on())
+	end
+end
+
+local SETTINGS = {
+	{ "CAMERA" },
+	{ "Camera distance", "distance", 3, 8, 0.5 },
+	{ "Camera height", "height", 1, 2.5, 0.1 },
+	{ "Shoulder offset", "shoulder", 0, 1.5, 0.1 },
+	{ "Camera smoothing", "camera_smoothing", 0, 60, 5 },
+	{ "Mouse sensitivity", "sensitivity", 0.05, 0.5, 0.01 },
+	{ "Invert mouse Y", "invert_y" },
+	{ "Pad look speed", "pad_yaw_speed", 100, 400, 20, function(v) M.pad_pitch_speed = v * 0.6 end },
+	{ "Pad invert Y", "pad_invert_y" },
+	{ "Aim zoom", "aim_zoom", 0.5, 1, 0.05 },
+	{ "Aim camera distance", "aim_distance_scale", 0.5, 1, 0.05 },
+	{ "Aim sensitivity", "aim_sensitivity", 0.3, 1, 0.05 },
+	{ "Auto-centre when running", "auto_center" },
+	{ "Auto-centre only when sprinting", "auto_center_sprint_only" },
+	{ "Auto-centre strength", "auto_center_rate", 0.2, 3, 0.2 },
+	{ "Camera shake", "camera_shake" },
+	{ "GAMEPLAY" },
+	{ "Aim walk speed", "aim_walk_speed", 1, 3, 0.25 },
+	{ "Hold dive to go prone (s, 0 off)", "prone_hold", 0, 0.6, 0.05 },
+	{ "Prone fire", "prone_fire" },
+	{ "Pad aim assist", "pad_aim_assist" },
+	{ "HD2 pad layout", "pad_remap", nil, nil, nil, remap },
+	{ "Ping voice callout", "ping_callout" },
+	{ "Escort NPCs safe off-screen", "escort_offscreen_safe" },
+	{ "Weapon range x", "range_scale", 1, 3, 0.25, rerange },
+	{ "HUD" },
+	{ "Compass", "compass" },
+	{ "Enemies on compass", "compass_enemies" },
+	{ "Reticle ammo / markers", "reticle_hud" },
+	{ "Dynamic crosshair", "dynamic_crosshair" },
+	{ "Weapon panel", "weapon_panel" },
+	{ "Damage arcs", "damage_arcs" },
+	{ "Hit vignette", "hit_vignette" },
+	{ "Throw arc", "throw_arc" },
+	{ "Stratagem panel (mod's)", "stratagem_panel" },
+	{ "Crosshair size (pad)", "crosshair_size", 16, 64, 4 },
+	{ "GRAPHICS" },
+	{ "View distance (fog x)", "fog_scale", 1, 8, 0.5, refog },
+	{ "Fog tint strength", "fog_grading_strength", 0, 2, 0.25, regrade },
+	{ "Sky", "sky_mode", SKY_CHOICES },
+	{ "Weather", "weather", WEATHER_CHOICES, nil, nil, reweather },
+	{ "Aim depth of field", "aim_dof", nil, nil, nil, rerender },
+	{ "Ambient occlusion", { "renderer_settings", "ssao_enabled" }, nil, nil, nil, rerender },
+	{ "Particle shadows", { "renderer_settings", "particles_cast_shadows" }, nil, nil, nil, rerender },
+	{ "Tessellation detail", { "renderer_settings", "g_tessellation_detail" }, 1, 4, 1, rerender },
+	{ "Tessellation triangle size", { "renderer_settings", "g_tessellation_tri_size" }, 2, 16, 2, rerender },
+}
+
+local function setting_get(key)
+	if type(key) == "table" then
+		local t = M[key[1]]
+		return type(t) == "table" and t[key[2]] or nil
+	end
+	return M[key]
+end
+
+local function setting_set(key, v)
+	if type(key) == "table" then
+		M[key[1]] = M[key[1]] or {}
+		M[key[1]][key[2]] = v
+	else
+		M[key] = v
+	end
+end
+
+local function key_name(key)
+	return type(key) == "table" and (key[1] .. "." .. key[2]) or key
+end
+
+local CFG_PATH = os.getenv("APPDATA") .. "\\Arrowhead\\Helldivers\\hd2cam.cfg"
+
+local function save_settings()
+	local f = io.open(CFG_PATH, "w")
+	if not f then
+		log("settings: could not write %s", CFG_PATH)
+		return
+	end
+	f:write("-- HD2CAM settings (edited in-game with ", tostring(M.menu_key), "; delete to reset)\n")
+	for _, e in ipairs(SETTINGS) do
+		if e[2] then
+			local v = setting_get(e[2])
+			if type(e[3]) == "table" then
+				v = e[3][v] or v -- choices are stored by index
+			end
+			f:write(key_name(e[2]), "=", tostring(v), "\n")
+		end
+	end
+	f:close()
+	log("settings saved to %s", CFG_PATH)
+end
+
+local function load_settings()
+	local f = io.open(CFG_PATH, "r")
+	if not f then
+		return
+	end
+	local by_name = {}
+	for _, e in ipairs(SETTINGS) do
+		if e[2] then
+			by_name[key_name(e[2])] = e
+		end
+	end
+	local n = 0
+	for line in f:lines() do
+		local k, v = string.match(line, "^%s*([%w_%.]+)%s*=%s*(.-)%s*$")
+		local e = k and by_name[k]
+		if e then
+			local value
+			if type(e[3]) == "table" then
+				for i, name in ipairs(e[3]) do
+					if name == v then
+						value = i
+					end
+				end
+			elseif v == "true" or v == "false" then
+				value = v == "true"
+			else
+				value = tonumber(v)
+			end
+			if value ~= nil then
+				setting_set(e[2], value)
+				n = n + 1
+			end
+		end
+	end
+	f:close()
+	log("settings: %d loaded from %s", n, CFG_PATH)
+end
+
+local PAD_L3, PAD_R3, PAD_D_LEFT, PAD_D_RIGHT = { "left_thumb", "l3" }, { "right_thumb", "r3" }, { "d_left" }, { "d_right" }
+local D_UP_NAMES, D_DOWN_NAMES = { "d_up" }, { "d_down" }
+M.menu_row = 2
+
+local function menu_pressed(pad, key, names)
+	if key_pressed(key) then
+		return true
+	end
+	return pad ~= nil and pad_pressed(pad, names)
+end
+
+local function menu_step(e, dir)
+	local v = setting_get(e[2])
+	if type(e[3]) == "table" then
+		local n = #e[3]
+		v = ((tonumber(v) or 1) - 1 + dir) % n + 1
+	elseif e[3] then
+		v = math.max(e[3], math.min(e[4], (tonumber(v) or e[3]) + dir * e[5]))
+		v = math.floor(v / e[5] + 0.5) * e[5]
+	else
+		v = not v
+	end
+	setting_set(e[2], v)
+	if type(e[6]) == "function" then
+		e[6](v)
+	end
+end
+
+local function value_text(e)
+	local v = setting_get(e[2])
+	if type(e[3]) == "table" then
+		return tostring(e[3][v] or v)
+	elseif e[3] then
+		return string.format(e[5] < 1 and "%.2f" or "%g", tonumber(v) or 0)
+	end
+	return v and "on" or "off"
+end
+
+-- Open / close: the menu key or Home, or both sticks pressed in together on
+-- a pad (an edge on the combined state, so a simultaneous press counts).
+local function menu_toggle_pressed(pad)
+	local down = key_pressed(M.menu_key) or key_pressed("home")
+	if pad then
+		local l3 = pad_value(pad, "button", PAD_L3) or 0
+		local r3 = pad_value(pad, "button", PAD_R3) or 0
+		local both = l3 > 0.5 and r3 > 0.5
+		if both and not M.menu_combo_down then
+			down = true
+		end
+		M.menu_combo_down = both
+	end
+	return down
+end
+
+-- Called every HUD frame in a mission: handles the keys, draws when open.
+local function settings_menu(hud, raw, font, k, w, h)
+	local pad = M.player_pad
+	if not M.menu_keys_logged then
+		M.menu_keys_logged = true
+		log("settings menu: key %s %s, home %s; pad: L3 + R3 together",
+			tostring(M.menu_key), Keyboard.button_index(M.menu_key) and "ok" or "UNKNOWN",
+			Keyboard.button_index("home") and "ok" or "UNKNOWN")
+	end
+	if menu_toggle_pressed(pad) and M.clock - (M.menu_toggled_at or -10) > 0.4 then
+		M.menu_toggled_at = M.clock
+		M.menu_open = not M.menu_open
+		if not M.menu_open then
+			save_settings()
+		else
+			log("settings menu opened")
+		end
+	end
+	if not M.menu_open then
+		return
+	end
+	-- Navigation. Section headers are skipped.
+	local rows = #SETTINGS
+	if menu_pressed(pad, "down", D_DOWN_NAMES) then
+		repeat
+			M.menu_row = M.menu_row % rows + 1
+		until SETTINGS[M.menu_row][2]
+	elseif menu_pressed(pad, "up", D_UP_NAMES) then
+		repeat
+			M.menu_row = (M.menu_row - 2) % rows + 1
+		until SETTINGS[M.menu_row][2]
+	end
+	local e = SETTINGS[M.menu_row]
+	if e and e[2] then
+		if menu_pressed(pad, "right", PAD_D_RIGHT) then
+			menu_step(e, 1)
+		elseif menu_pressed(pad, "left", PAD_D_LEFT) then
+			menu_step(e, -1)
+		end
+	end
+	-- Drawing: a column on the left, the selected row kept in view.
+	local layer = 90
+	local visible = 18
+	local first = math.max(1, math.min(M.menu_row - math.floor(visible / 2), rows - visible + 1))
+	local x, y = 30 * k, 60 * k
+	local row_h = 16 * k
+	Gui.rect(raw, Vector3(x - 10 * k, y - 26 * k, layer - 1), Vector2(330 * k, (visible + 2) * row_h + 30 * k), Color(200, 0, 0, 0))
+	hud_text(raw, font, k, "HD2CAM SETTINGS", x, y - 22 * k, 13, Color(255, 255, 220, 60), layer)
+	for i = first, math.min(rows, first + visible - 1) do
+		local entry = SETTINGS[i]
+		local ry = y + (i - first) * row_h
+		if not entry[2] then
+			hud_text(raw, font, k, entry[1], x, ry + 2 * k, 11, Color(200, 255, 210, 60), layer)
+		else
+			local selected = i == M.menu_row
+			if selected then
+				Gui.rect(raw, Vector3(x - 6 * k, ry - 1 * k, layer - 1), Vector2(322 * k, row_h), Color(90, 255, 255, 255))
+			end
+			local c = selected and Color(255, 255, 255, 255) or Color(200, 220, 220, 220)
+			hud_text(raw, font, k, entry[1], x, ry + 2 * k, 11, c, layer)
+			hud_text(raw, font, k, value_text(entry), x + 230 * k, ry + 2 * k, 11, c, layer)
+		end
+	end
+	hud_text(raw, font, k, string.upper(tostring(M.menu_key)) .. " / L3+R3 close & save   up/down pick   left/right change",
+		x, y + visible * row_h + 6 * k, 9, Color(170, 255, 255, 255), layer)
+end
+hud2.settings_menu = settings_menu
+M.load_settings = load_settings
+end -- dressing + settings
+
 local function draw_reticle_hud(hud)
 	local hd = hud.hd_gui
 	local font = hd and hd.current_font
@@ -2412,9 +4416,6 @@ local function draw_reticle_hud(hud)
 		cx, cy = M.shot_screen[1], M.shot_screen[2]
 	end
 	local layer = 70
-	local function text(str, x, y, size, color)
-		Gui.text(raw, str, font.font, size * k, font.material, Vector3(x, y, layer), color)
-	end
 
 	local st = weapon_state()
 	if count_new_hits(st) > 0 then
@@ -2427,20 +4428,38 @@ local function draw_reticle_hud(hud)
 	if hit then
 		local r, sz = (kill and 14 or 10) * k, (kill and 4 or 3) * k
 		local c = kill and Color(255, 255, 60, 50) or Color(255, 255, 255, 255)
-		for _, o in ipairs({ { -1, -1 }, { 1, -1 }, { -1, 1 }, { 1, 1 } }) do
+		for _, o in ipairs(HIT_TICKS) do
 			Gui.rect(raw, Vector3(cx + o[1] * r - sz / 2, cy + o[2] * r - sz / 2, layer), Vector2(sz, sz), c)
 		end
 	end
 
-	-- Ammo, below-right of the crosshair, while in combat or reloading.
-	if st and type(st.rounds) == "number" then
+	-- Reticle ticks that open with the weapon's spread (HD2 style).
+	if M.dynamic_crosshair and st and (M.combat_now or M.aiming_now) and not M.throwing then
+		local open = hud2.spread_openness(st)
+		local gap = (5 + 22 * open) * k
+		local len, th = 7 * k, 2 * k
+		local c = Color(220, 255, 255, 255)
+		Gui.rect(raw, Vector3(cx - gap - len, cy - th / 2, layer), Vector2(len, th), c)
+		Gui.rect(raw, Vector3(cx + gap, cy - th / 2, layer), Vector2(len, th), c)
+		Gui.rect(raw, Vector3(cx - th / 2, cy - gap - len, layer), Vector2(th, len), c)
+		Gui.rect(raw, Vector3(cx - th / 2, cy + gap, layer), Vector2(th, len), c)
+	end
+
+	hud2.draw_hit_vignette(raw, k, w, h)
+	hud2.draw_damage_arc(raw, k, cx, cy, layer)
+	hud2.draw_weapon_panel(raw, font, k, w, h, st)
+
+	-- Ammo, below-right of the crosshair, while in combat or reloading
+	-- (unless the weapon panel shows it).
+	if st and type(st.rounds) == "number" and not M.weapon_panel then
 		local reloading = st.is_reloading
 		if M.combat_now or reloading then
 			local info = st.weapon_info or {}
 			local low = st.rounds <= (info.low_ammo_warning or 0)
 			local c = low and Color(255, 255, 80, 60) or Color(230, 255, 255, 255)
-			local mags = type(st.magazines) == "number" and (" | " .. st.magazines) or ""
-			text(reloading and "RELOADING" or (st.rounds .. mags), cx + 26 * k, cy - 22 * k, 12, c)
+			local mags = type(st.magazines) == "number" and st.magazines or nil
+			reticle_text(raw, font, k, reloading and "RELOADING" or ammo_label(st.rounds, mags),
+				cx + 26 * k, cy - 22 * k, 12, c)
 		end
 	end
 
@@ -2449,10 +4468,37 @@ local function draw_reticle_hud(hud)
 		local ok, target = pcall(crosshair_point)
 		if ok and target then
 			local d = Vector3.length(flat(target - Unit.world_position(M.local_unit, 0)))
-			text(string.format("%dm", math.floor(d + 0.5)), cx + 26 * k, cy + 10 * k, 12, Color(230, 255, 210, 60))
+			reticle_text(raw, font, k, metres_label(d), cx + 26 * k, cy + 10 * k, 12, Color(230, 255, 210, 60))
 		end
 	end
 end
+
+-- Aim walk speed. Each frame the character sends the mover a "move_speed":
+-- its state's wanted speed, times the weapon's move_speed_aim in the aim
+-- and fire states (and a reload factor). Scale it while aiming or firing so
+-- you can actually walk, as in HD2. Logged a few times so the numbers show.
+on_require("lua/components/character_component", function()
+	local cc = CharacterComponent
+	if type(cc.queue_command_master) ~= "function" or is_patched(cc, "aim walk") then
+		return
+	end
+	local original = cc.queue_command_master
+	mark_patched(cc, "aim walk")
+	cc.queue_command_master = function(self, unit, component, command, value, ...)
+		if component == "mover" and command == "move_speed" and unit == M.local_unit
+			and type(value) == "number" and M.combat_now and camera_active() and not M.on_bridge then
+			local scaled = value * (M.aim_walk_speed or 1)
+			M.aim_speed_logged = (M.aim_speed_logged or 0)
+			if M.aim_speed_logged < 4 and M.clock - (M.aim_speed_logged_at or -10) > 1.5 then
+				M.aim_speed_logged, M.aim_speed_logged_at = M.aim_speed_logged + 1, M.clock
+				log("aim walk: game move speed %.2f -> %.2f", value, scaled)
+			end
+			return original(self, unit, component, command, scaled, ...)
+		end
+		return original(self, unit, component, command, value, ...)
+	end
+	log("aim walk hook installed")
+end)
 
 -- Kills: the game reports each enemy killed with the killer's unit.
 on_require("lua/components/character_component", function()
@@ -2499,21 +4545,51 @@ on_require("lua/hud/hud", function()
 			end
 			M.fog_scale = M.fog_scale_by_environment[env] or M.fog_default
 			M.fog_applied = false
-			log("environment: %s (%s) -> view distance fog x%g (F7 to change)", tostring(env),
-				tostring(level.mission_type_name), M.fog_scale)
+			-- Time of day: the level stores an index into the difficulty
+			-- settings' list (dawn, day, dusk, night), or the name itself.
+			local tod = level.time_of_day
+			local ds = rawget(_G, "DifficultySettings")
+			if type(tod) == "number" and ds and type(ds.time_of_day_lookup) == "table" then
+				tod = ds.time_of_day_lookup[tod]
+			end
+			M.time_of_day = type(tod) == "string" and tod or nil
+			M.engine_sky_tinted = false
+			log("environment: %s (%s, %s) -> view distance fog x%g (F7 to change)", tostring(env),
+				tostring(level.mission_type_name), tostring(M.time_of_day), M.fog_scale)
 		end
 		-- Missions only: the bridge's player objects have no map_ping.
 		if CameraManager and CameraManager.state == "follow" and not M.on_bridge then
 			try("co-op", coop_update, self.players)
 		end
+		M.entity_manager = self.entity_manager
 		try("map flag", update_map_flag, self)
 		try("map marks", clear_own_marks, self, self.generated_level or self.custom_level)
 		try("compass", draw_compass, self)
 		if camera_active() and not M.on_bridge then
+			try("teammates", hud2.update_teammates, self)
+			try("ambient props", hud2.dress_level)
 			try("ping", handle_ping, self)
 			try("reticle hud", draw_reticle_hud, self)
+			try("throw arc", hud2.draw_throw_arc)
+			local hd = self.hd_gui
+			if hd and hd.gui and hd.current_font then
+				local w, h = Application.resolution()
+				try("stratagem panel", hud2.draw_stratagem_panel, self, hd.gui, hd.current_font, h / 720, w, h)
+				try("settings menu", hud2.settings_menu, self, hd.gui, hd.current_font, h / 720, w, h)
+			end
 		end
 		return ...
+	end
+	-- Our stratagem panel replaces the game's list, once ours has its data.
+	if type(hud.draw_stratagems) == "function" and not is_patched(hud, "stratagems") then
+		local original_list = hud.draw_stratagems
+		mark_patched(hud, "stratagems")
+		hud.draw_stratagems = function(self, ...)
+			if M.stratagem_panel and M.strat_list_src and camera_active() and not M.on_bridge then
+				return
+			end
+			return original_list(self, ...)
+		end
 	end
 	hud.update = function(self, ...)
 		return after_hud(self, original(self, ...))
@@ -2525,5 +4601,10 @@ end)
 -- In case the world proxy class was loaded before this file ran.
 try("world proxy", patch_world_proxy)
 try("viewport proxy", patch_viewport_proxy)
+
+-- Saved in-game settings override the defaults above.
+if M.load_settings then
+	try("settings", M.load_settings)
+end
 
 log("HD2CAM %s loaded (press %s in a mission to toggle)", VERSION, M.toggle_key)

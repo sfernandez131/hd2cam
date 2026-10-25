@@ -56,10 +56,10 @@ def is_vanilla(path):
 
 def mod_payload():
     """The mod as it should sit in the bundle, header included."""
-    if MOD_BYTECODE.exists():
-        body = MOD_BYTECODE.read_bytes()
-    else:
-        body = MOD_SOURCE.read_bytes().replace(b"\r\n", b"\n")
+    # Bytecode only: the game embeds LuaJIT 2.0 and crashes on plain source.
+    if not MOD_BYTECODE.exists():
+        raise SystemExit(f"{MOD_BYTECODE} is missing; run `python build.py` first")
+    body = MOD_BYTECODE.read_bytes()
     return struct.pack("<II", len(body), 2) + body
 
 
@@ -82,7 +82,7 @@ def install():
     props, entries = parse_bundle(decompress_bundle(backup))
     find_target(entries).variants[0][1] = mod_payload()
     bundle.write_bytes(compress_bundle(build_bundle(props, entries)))
-    print(f"installed mod ({'bytecode' if MOD_BYTECODE.exists() else 'source'}) into {bundle.name}")
+    print(f"installed mod into {bundle.name}")
 
 
 def uninstall():
@@ -101,6 +101,8 @@ def status():
     bundle = target_bundle()
     if is_vanilla(bundle):
         return "vanilla"
+    if not MOD_BYTECODE.exists():
+        return "modded (no local build to compare against)"
     return "modded (current)" if is_current(bundle) else "modded (outdated)"
 
 

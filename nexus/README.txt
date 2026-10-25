@@ -2,6 +2,19 @@ HD2CAM {version} ({build}) - HELLDIVERS 2 style camera and controls for HELLDIVE
 
 Over-the-shoulder camera with mouse / right-stick look, HD2-style controller
 layout, aim zoom, compass with map pings, longer view distance and a sky.
+Also HD2 style: the camera tightens over the shoulder while aiming and pulls
+back while sprinting, eases round behind you when you run, and shakes on
+explosions and hits; a reticle that opens with weapon spread; a weapon panel
+(ammo, magazines, fire mode) bottom right; red arcs toward whatever hit you;
+a throw arc and landing ring while holding a grenade or stratagem; a death
+cam that follows a teammate; and gentle aim assist on a controller. Graphics:
+depth of field focused on the crosshair while aiming, planet-tinted fog, a
+red flash at the screen edges when hit, and renderer features the options
+menu hides (ambient occlusion, particle shadows), applied for the session
+only; and weather on every planet (wind, rain, snow, embers). The compass
+marks enemies you can see. Firing while downed shoots instead of doing
+nothing. Every one of these is a switch at the top of the mod's source (as
+is an optional HD2-style stratagem list, off by default).
 
 REQUIREMENTS
   HELLDIVERS (2015) on Steam, Windows.
@@ -31,9 +44,9 @@ INSTALL
   The installer keeps its files and a backup of the original game file in
   <Steam library>\steamapps\common\Helldivers\HD2CAM.
 
-UPDATE OR SWITCH BUILD
-  Run the new version's installer (or the other build's) and choose 1.
-  It replaces whatever HD2CAM version is installed. Close the game first.
+UPDATE
+  Extract the new version and run its installer, choosing 1. It replaces
+  whatever HD2CAM version is installed. Close the game first.
 
 UNINSTALL
   Run the installer and choose 2, from this folder or from the copy the
@@ -52,10 +65,15 @@ CONTROLS
   Middle mouse / D-pad up .... ping the spot under the crosshair
   Controller (HD2 layout) .... RT fire, RB grenade, X reload, B dive,
                                R3 melee, LB + D-pad stratagems
+  Insert or Home / L3 + R3 ... settings menu: every switch and number the
+                               mod adds, saved to hd2cam.cfg next to the log
+  Hold dive / Z .............. go prone (tap dive still dives); fire works
+                               while prone, dive or Z again to get up
   F8 ......................... mod on / off
   F9 ......................... sky style (engine / off / overlay)
   F7 ......................... view distance far / medium / vanilla
                                (starts medium on city and lava planets)
+  F11 ........................ camera smoothing on / off
 
 CO-OP
   Every player gets their own camera. The mod is built to switch itself
@@ -69,5 +87,9 @@ TROUBLESHOOTING
   (see UNINSTALL), then install again.
   "running scripts is disabled on this system": you ran HD2CAM.ps1 directly;
   use the full command under RUNNING THE INSTALLER instead.
+  Stuttery or juddering motion even though the frame rate is high: turn
+  V-Sync on in the game's video options. The free camera makes uneven
+  frame pacing much more visible than the top-down view did; the mod
+  itself costs well under a millisecond per frame.
   HD2CAM.ps1 is plain text: open it in Notepad to see exactly what it does.
   Source code: https://github.com/sfernandez131/hd2cam
